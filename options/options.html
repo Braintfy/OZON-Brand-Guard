@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OZON Brand Guard — Настройки</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f7;
+      color: #1a1a1a;
+      padding: 40px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    p.subtitle { color: #666; margin-bottom: 32px; }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .card h2 { font-size: 18px; margin-bottom: 16px; }
+    .info { background: #e8f4fd; color: #0066cc; padding: 12px 16px; border-radius: 8px; font-size: 14px; line-height: 1.5; }
+    a { color: #005bff; }
+    code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>OZON Brand Guard</h1>
+  <p class="subtitle">Расширенные настройки</p>
+
+  <div class="card">
+    <h2>Как пользоваться</h2>
+    <div class="info">
+      <ol style="margin-left: 20px; line-height: 2;">
+        <li>Откройте <a href="https://seller.ozon.ru/app/brand/sellers" target="_blank">Продавцы бренда</a> в OZON Seller</li>
+        <li>Нажмите на иконку расширения Brand Guard</li>
+        <li>Настройте бренды, whitelist и текст жалобы</li>
+        <li>Выберите режим: «Только сканировать» или «Сканировать + жалобы»</li>
+        <li>Нажмите «Сканировать»</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Совместимость</h2>
+    <p>Расширение работает в браузерах на основе Chromium:</p>
+    <ul style="margin: 12px 0 0 20px; line-height: 2;">
+      <li>Яндекс Браузер</li>
+      <li>Google Chrome</li>
+      <li>Microsoft Edge</li>
+      <li>Opera / Opera GX</li>
+      <li>Brave</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Технические детали</h2>
+    <p style="line-height: 1.8;">
+      <strong>Manifest Version:</strong> 3<br>
+      <strong>Content Script:</strong> <code>seller.ozon.ru/app/brand/sellers</code><br>
+      <strong>Хранение данных:</strong> <code>chrome.storage.local</code><br>
+      <strong>Планировщик:</strong> <code>chrome.alarms</code><br>
+      <strong>Файлы ТЗ:</strong> хранятся в base64 внутри storage
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Поддержка</h2>
+    <p>Основные настройки доступны через popup расширения (клик по иконке).</p>
+    <p style="margin-top: 8px;">Все настройки можно экспортировать/импортировать через JSON файл в разделе «Настройки» popup.</p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=480">
+  <title>OZON Brand Guard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header__logo">
+        <svg width="24" height="24" viewBox="0 0 128 128" fill="none">
+          <path d="M64 8L20 30v34c0 28 18.7 54.2 44 60 25.3-5.8 44-32 44-60V30L64 8z" fill="#fff"/>
+          <path d="M64 16L28 34v28c0 24 16 46.5 36 52 20-5.5 36-28 36-52V34L64 16z" fill="#fff" opacity="0.3"/>
+          <path d="M56 62l10 10 20-20" stroke="#005BFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h1>Brand Guard</h1>
+      </div>
+      <div class="header__status" id="statusIndicator" title="Статус">
+        <span class="status-dot status-dot--idle"></span>
+        <span class="status-text">Готов</span>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="tabs">
+      <button class="tab tab--active" data-tab="main">Главная</button>
+      <button class="tab" data-tab="brands">Бренды</button>
+      <button class="tab" data-tab="whitelist">Whitelist</button>
+      <button class="tab" data-tab="settings">Настройки</button>
+      <button class="tab" data-tab="log">Жалобы</button>
+      <button class="tab" data-tab="guide">Инфо</button>
+    </nav>
+
+    <!-- Tab: Main -->
+    <section class="tab-content tab-content--active" id="tab-main">
+      <div class="card">
+        <h3>Управление</h3>
+        <p class="hint">Откройте <a href="https://seller.ozon.ru/app/brand/sellers" target="_blank">Продавцы бренда</a> на OZON Seller</p>
+        
+        <div class="control-group">
+          <label class="label">Режим</label>
+          <div class="radio-group">
+            <label class="radio">
+              <input type="radio" name="mode" value="scan" checked>
+              <span>Только сканировать</span>
+            </label>
+            <label class="radio">
+              <input type="radio" name="mode" value="complain">
+              <span>Сканировать + жалобы</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label class="label">Задержка между жалобами (сек)</label>
+          <div class="range-control">
+            <input type="range" id="delayRange" min="10" max="300" value="20" step="5">
+            <span id="delayValue" class="range-value">20с</span>
+          </div>
+          <p class="hint">Минимум 10с. Рекомендуется 15-30с</p>
+        </div>
+
+        <div class="btn-group">
+          <button class="btn btn--primary btn--full" id="btnStart">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg>
+            Сканировать
+          </button>
+          <button class="btn btn--danger btn--full" id="btnStop" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
+            Остановить
+          </button>
+        </div>
+      </div>
+
+      <div class="card" id="statsCard" style="display:none">
+        <h3>Результаты</h3>
+        <div class="stats">
+          <div class="stat">
+            <span class="stat__value" id="statTotal">0</span>
+            <span class="stat__label">Всего</span>
+          </div>
+          <div class="stat">
+            <span class="stat__value stat__value--danger" id="statViolators">0</span>
+            <span class="stat__label">Нарушители</span>
+          </div>
+          <div class="stat">
+            <span class="stat__value stat__value--success" id="statWhitelisted">0</span>
+            <span class="stat__label">Разрешены</span>
+          </div>
+          <div class="stat">
+            <span class="stat__value stat__value--info" id="statComplained">0</span>
+            <span class="stat__label">Жалоб</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Schedule -->
+      <div class="card">
+        <h3>Расписание</h3>
+        <label class="toggle">
+          <input type="checkbox" id="scheduleEnabled">
+          <span class="toggle__slider"></span>
+          <span class="toggle__text">Автозапуск по расписанию</span>
+        </label>
+        <div class="control-group" id="scheduleOptions" style="display:none">
+          <label class="label">Интервал (часы)</label>
+          <select id="scheduleInterval" class="select">
+            <option value="1">Каждый 1 час</option>
+            <option value="3">Каждые 3 часа</option>
+            <option value="6" selected>Каждые 6 часов</option>
+            <option value="12">Каждые 12 часов</option>
+            <option value="24">Раз в сутки</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: Brands -->
+    <section class="tab-content" id="tab-brands">
+      <!-- Auto-scan brands -->
+      <div class="card">
+        <h3>Автопоиск брендов</h3>
+        <button class="btn btn--primary btn--full" id="btnScanBrands">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z"/></svg>
+          Найти бренды на странице
+        </button>
+        <div id="scannedBrandsList" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h3>Мои бренды</h3>
+        
+        <div id="brandsList"></div>
+        
+        <button class="btn btn--secondary btn--full" id="btnAddBrand">
+          + Добавить бренд
+        </button>
+      </div>
+
+      <!-- Brand template (hidden) -->
+      <template id="brandTemplate">
+        <div class="brand-item" data-brand-id="">
+          <div class="brand-header">
+            <input type="text" class="input brand-name" placeholder="Название бренда (как на OZON)">
+            <button class="btn-icon btn-icon--delete" title="Удалить бренд">×</button>
+          </div>
+          <div class="brand-body">
+            <div class="control-group">
+              <label class="label">Текст жалобы</label>
+              <textarea class="textarea brand-complaint" rows="2" placeholder="Продажа подделок на мой бренд"></textarea>
+            </div>
+            <div class="control-group">
+              <label class="label">Документ (PDF, JPG, PNG)</label>
+              <div class="file-upload">
+                <input type="file" class="brand-file" accept=".pdf,.jpg,.jpeg,.png">
+                <span class="file-name">Файл не выбран</span>
+                <button class="btn btn--small">Выбрать</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- Tab: Whitelist -->
+    <section class="tab-content" id="tab-whitelist">
+      <div class="card">
+        <h3>Разрешённые продавцы</h3>
+        <p class="hint">Продавцы из этого списка не получат жалобы</p>
+        
+        <div id="whitelistEntries"></div>
+        
+        <div class="add-row">
+          <input type="text" id="whitelistInput" class="input" placeholder="Название или ИНН продавца">
+          <button class="btn btn--secondary" id="btnAddWhitelist">+</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Фильтр по странам</h3>
+        
+        <div class="country-filters">
+          <label class="checkbox">
+            <input type="checkbox" value="CN" checked class="country-filter">
+            <span>CN — Китай</span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" value="TR" class="country-filter">
+            <span>TR — Турция</span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" value="KR" class="country-filter">
+            <span>KR — Южная Корея</span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" value="IN" class="country-filter">
+            <span>IN — Индия</span>
+          </label>
+        </div>
+
+        <label class="toggle" style="margin-top: 12px">
+          <input type="checkbox" id="useCountryFilter" checked>
+          <span class="toggle__slider"></span>
+          <span class="toggle__text">Учитывать страну при фильтрации</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Tab: Settings -->
+    <section class="tab-content" id="tab-settings">
+      <div class="card">
+        <h3>Общие настройки</h3>
+        
+        <div class="control-group">
+          <label class="label">Текст жалобы по умолчанию</label>
+          <textarea class="textarea" id="defaultComplaint" rows="3" placeholder="Продажа подделок на мой бренд">Продажа подделок на мой бренд</textarea>
+          <p class="hint">Используется если у бренда не задан свой текст</p>
+        </div>
+
+        <div class="control-group">
+          <label class="label">Dry Run (тестовый режим)</label>
+          <label class="toggle">
+            <input type="checkbox" id="dryRun">
+            <span class="toggle__slider"></span>
+            <span class="toggle__text">Не отправлять жалобы, только показать нарушителей</span>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <label class="label">Уведомления</label>
+          <label class="toggle">
+            <input type="checkbox" id="notificationsEnabled" checked>
+            <span class="toggle__slider"></span>
+            <span class="toggle__text">Показывать уведомления о результатах</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Данные</h3>
+        <div class="btn-group">
+          <button class="btn btn--secondary" id="btnExport">Экспорт настроек</button>
+          <button class="btn btn--secondary" id="btnImport">Импорт настроек</button>
+        </div>
+        <input type="file" id="importFile" accept=".json" style="display:none">
+        <div class="btn-group" style="margin-top:8px">
+          <button class="btn btn--danger" id="btnClearLog">Очистить историю</button>
+          <button class="btn btn--danger" id="btnResetAll">Сброс всех настроек</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: Log (Жалобы) -->
+    <section class="tab-content" id="tab-log">
+      <div class="card">
+        <div class="log-header">
+          <h3>История жалоб</h3>
+          <span class="log-count" id="logCount">0 / 5000</span>
+        </div>
+
+        <!-- Sub-tabs -->
+        <div class="sub-tabs">
+          <button class="sub-tab sub-tab--active" data-subtab="complaints">Результаты</button>
+          <button class="sub-tab" data-subtab="technical">Техническая</button>
+        </div>
+
+        <!-- Complaints sub-tab -->
+        <div class="sub-content sub-content--active" id="subtab-complaints">
+          <div class="log-table-wrap">
+            <table class="log-table" id="logTable">
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  <th>Продавец</th>
+                  <th>ИНН</th>
+                  <th>Бренд</th>
+                  <th>Страна</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody id="logTableBody">
+              </tbody>
+            </table>
+          </div>
+          <p class="hint" id="logEmpty">Пока нет записей</p>
+
+          <div class="log-export" id="logExportBtns" style="display:none">
+            <span class="label">Экспорт:</span>
+            <button class="btn btn--small btn--secondary" id="btnExportCSV">CSV</button>
+            <button class="btn btn--small btn--secondary" id="btnExportExcel">Excel</button>
+            <button class="btn btn--small btn--secondary" id="btnExportTXT">TXT</button>
+          </div>
+        </div>
+
+        <!-- Technical sub-tab -->
+        <div class="sub-content" id="subtab-technical">
+          <div class="tech-log" id="techLogEntries">
+            <p class="hint">Технические логи отображаются в плавающей панели на странице OZON и в консоли браузера (F12).</p>
+            <p class="hint">Здесь — последние события сессии:</p>
+          </div>
+          <div id="techLogList" class="tech-log-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: Guide -->
+    <section class="tab-content" id="tab-guide">
+      <div class="card">
+        <h3>Как пользоваться</h3>
+        <div class="guide-content">
+          <div class="guide-step">
+            <div class="guide-step__num">1</div>
+            <div class="guide-step__body">
+              <strong>Установка</strong>
+              <p>Откройте <code>browser://extensions/</code> → «Режим разработчика» → «Загрузить распакованное» → выберите папку расширения.</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <div class="guide-step__num">2</div>
+            <div class="guide-step__body">
+              <strong>Откройте OZON Seller</strong>
+              <p>Перейдите на <a href="https://seller.ozon.ru/app/brand/sellers" target="_blank">Продавцы бренда</a>.</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <div class="guide-step__num">3</div>
+            <div class="guide-step__body">
+              <strong>Найдите бренды</strong>
+              <p>Вкладка «Бренды» → «Найти бренды на странице». Перелистывайте страницы и нажимайте снова — результаты накапливаются.</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <div class="guide-step__num">4</div>
+            <div class="guide-step__body">
+              <strong>Настройте бренды</strong>
+              <p>Задайте текст жалобы и прикрепите файл торгового знака (PDF, JPG, PNG до 10 МБ).</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <div class="guide-step__num">5</div>
+            <div class="guide-step__body">
+              <strong>Запуск</strong>
+              <p>Главная → «Сканировать + жалобы» → задержка 15-30с → «Сканировать». Не закрывайте вкладку OZON!</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Совместимость</h3>
+        <p class="hint" style="margin-bottom:0">Яндекс Браузер, Google Chrome, Microsoft Edge, Opera, Brave — все Chromium-браузеры.</p>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>OZON Brand Guard v1.4.0</span>
+      <a href="https://t.me/firayzer" target="_blank">by firayzer</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

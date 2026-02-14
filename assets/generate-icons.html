@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head><title>Generate Shield Icons</title></head>
+<body>
+<h2>Click each button to download the icon</h2>
+<button onclick="gen(16)">Download 16x16</button>
+<button onclick="gen(48)">Download 48x48</button>
+<button onclick="gen(128)">Download 128x128</button>
+<canvas id="c" style="display:none"></canvas>
+<script>
+function gen(size) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2979FF"/><stop offset="100%" stop-color="#005BFF"/>
+    </linearGradient></defs>
+    <path d="M64 8L20 30v34c0 28 18.7 54.2 44 60 25.3-5.8 44-32 44-60V30L64 8z" fill="url(#g)"/>
+    <path d="M64 16L28 34v28c0 24 16 46.5 36 52 20-5.5 36-28 36-52V34L64 16z" fill="#fff" opacity="0.15"/>
+    <path d="M56 62l10 10 20-20" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </svg>`;
+  const canvas = document.getElementById('c');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const img = new Image();
+  img.onload = () => {
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(img, 0, 0, size, size);
+    const a = document.createElement('a');
+    a.download = 'icon-' + size + '.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  };
+  img.src = 'data:image/svg+xml;base64,' + btoa(svg);
+}
+</script>
+</body>
+</html>
