@@ -332,7 +332,16 @@ a:hover {
 }
 
 .btn--danger:hover {
-  background: #e0342c;
+  background: #cc2f26;
+}
+
+.btn--warning {
+  background: #e65100;
+  color: #fff;
+}
+
+.btn--warning:hover {
+  background: #bf4400;
 }
 
 .btn--secondary {

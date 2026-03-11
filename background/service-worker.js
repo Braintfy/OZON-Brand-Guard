@@ -38,7 +38,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Relay messages from content script to all extension pages (popup/detached window)
     case 'scanBrandsResult':
     case 'updateStats':
+    case 'updateProductStats':
     case 'done':
+    case 'doneProducts':
     case 'logUpdate':
     case 'techLog':
       relayToExtensionPages(msg);

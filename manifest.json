@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OZON Brand Guard",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Автоматическая защита брендов от подделок на OZON — подача жалоб на нарушителей",
   "default_locale": "ru",
 
@@ -35,6 +35,12 @@
     {
       "matches": ["https://seller.ozon.ru/app/brand/sellers*"],
       "js": ["content/content.js"],
+      "css": ["content/content.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://seller.ozon.ru/app/brand-products/*"],
+      "js": ["content/content-products.js"],
       "css": ["content/content.css"],
       "run_at": "document_idle"
     }

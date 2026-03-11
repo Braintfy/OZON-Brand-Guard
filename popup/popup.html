@@ -29,6 +29,7 @@
       <button class="tab tab--active" data-tab="main">Главная</button>
       <button class="tab" data-tab="brands">Бренды</button>
       <button class="tab" data-tab="whitelist">Whitelist</button>
+      <button class="tab" data-tab="products">Товары</button>
       <button class="tab" data-tab="settings">Настройки</button>
       <button class="tab" data-tab="log">Жалобы</button>
       <button class="tab" data-tab="guide">Инфо</button>
@@ -209,6 +210,63 @@
       </div>
     </section>
 
+    <!-- Tab: Products -->
+    <section class="tab-content" id="tab-products">
+      <div class="card">
+        <h3>Жалобы на товары</h3>
+        <p class="hint">Сканирование страницы <a href="https://seller.ozon.ru/app/brand-products/all" target="_blank">Список товаров бренда</a>. Жалобы подаются на товары чужих продавцов (не в Whitelist).</p>
+
+        <div class="control-group">
+          <label class="label">Текст жалобы на товар</label>
+          <textarea class="textarea" id="productComplaintText" rows="3" placeholder="Копия товара моего бренда, нарушение прав на товарный знак"></textarea>
+          <p class="hint">Отдельный текст для жалоб на товары. Если пусто — используется текст бренда.</p>
+        </div>
+
+        <div class="control-group">
+          <label class="label">Документ для жалоб на товары (PDF, JPG, PNG)</label>
+          <div class="file-upload">
+            <input type="file" id="productFile" accept=".pdf,.jpg,.jpeg,.png">
+            <span class="file-name" id="productFileName">Файл не выбран</span>
+            <button class="btn btn--small" id="btnProductFileSelect">Выбрать</button>
+          </div>
+          <p class="hint">Отдельный файл для товарных жалоб. Если не выбран — используется файл бренда.</p>
+        </div>
+
+        <div class="btn-group">
+          <button class="btn btn--warning btn--full" id="btnStartProducts">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg>
+            Сканировать товары
+          </button>
+          <button class="btn btn--danger btn--full" id="btnStopProducts" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
+            Остановить
+          </button>
+        </div>
+      </div>
+
+      <div class="card" id="productStatsCard" style="display:none">
+        <h3>Результаты (товары)</h3>
+        <div class="stats">
+          <div class="stat">
+            <span class="stat__value" id="pStatTotal">0</span>
+            <span class="stat__label">Всего</span>
+          </div>
+          <div class="stat">
+            <span class="stat__value stat__value--danger" id="pStatViolators">0</span>
+            <span class="stat__label">Наруш.</span>
+          </div>
+          <div class="stat">
+            <span class="stat__value stat__value--success" id="pStatWhitelisted">0</span>
+            <span class="stat__label">OK</span>
+          </div>
+          <div class="stat">
+            <span class="stat__value stat__value--info" id="pStatComplained">0</span>
+            <span class="stat__label">Жалоб</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Tab: Settings -->
     <section class="tab-content" id="tab-settings">
       <div class="card">
@@ -357,7 +415,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>OZON Brand Guard v1.4.0</span>
+      <span>OZON Brand Guard v1.5.0</span>
       <a href="https://t.me/firayzer" target="_blank">by firayzer</a>
     </footer>
   </div>

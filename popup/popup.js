@@ -13,6 +13,9 @@
     bannedCountries: ['CN'],
     useCountryFilter: true,
     defaultComplaint: 'Продажа подделок на мой бренд',
+    productComplaintText: '',
+    productFileData: null,
+    productFileName: '',
     delaySeconds: 20,
     mode: 'scan',
     dryRun: false,
@@ -52,6 +55,74 @@
       console.log('[OBG] Content script inject:', e.message);
     }
     await new Promise((r) => setTimeout(r, 300));
+  }
+
+  // Navigate to a specific OZON page, returns tab
+  async function ensureOzonPage(targetUrl, urlCheck) {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    if (activeTab && activeTab.url && activeTab.url.includes(urlCheck)) {
+      return activeTab;
+    }
+
+    const existing = await chrome.tabs.query({ url: targetUrl + '*' });
+    if (existing.length > 0) {
+      await chrome.tabs.update(existing[0].id, { active: true });
+      await new Promise((r) => setTimeout(r, 1000));
+      return existing[0];
+    }
+
+    if (activeTab && activeTab.url && activeTab.url.includes('seller.ozon.ru')) {
+      await chrome.tabs.update(activeTab.id, { url: targetUrl });
+      await waitForTabLoad(activeTab.id);
+      return activeTab;
+    }
+
+    const newTab = await chrome.tabs.create({ url: targetUrl });
+    await waitForTabLoad(newTab.id);
+    return newTab;
+  }
+
+  async function ensureSellersPage() {
+    return ensureOzonPage('https://seller.ozon.ru/app/brand/sellers', 'seller.ozon.ru/app/brand/sellers');
+  }
+
+  async function ensureProductsPage() {
+    return ensureOzonPage('https://seller.ozon.ru/app/brand-products/all', 'seller.ozon.ru/app/brand-products');
+  }
+
+  // Ensure content-products.js is injected
+  async function ensureProductContentScript(tabId) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content/content-products.js']
+      });
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: ['content/content.css']
+      });
+    } catch (e) {
+      console.log('[OBG] Product content script inject:', e.message);
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  function waitForTabLoad(tabId) {
+    return new Promise((resolve) => {
+      function listener(id, info) {
+        if (id === tabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          setTimeout(resolve, 2000); // extra wait for SPA rendering
+        }
+      }
+      chrome.tabs.onUpdated.addListener(listener);
+      // Timeout safety — resolve after 15s regardless
+      setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }, 15000);
+    });
   }
 
   function safeSendToTab(tabId, msg) {
@@ -99,7 +170,13 @@
     renderWhitelist();
     renderCountryFilters();
     renderSettings();
+    renderProductSettings();
     renderLog();
+  }
+
+  function renderProductSettings() {
+    document.getElementById('productComplaintText').value = config.productComplaintText || '';
+    document.getElementById('productFileName').textContent = config.productFileName || 'Файл не выбран';
   }
 
   function renderBrands() {
@@ -385,15 +462,20 @@
 
     // Scan brands from page
     document.getElementById('btnScanBrands').addEventListener('click', async () => {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.url || !tab.url.includes('seller.ozon.ru/app/brand/sellers')) {
-        alert('Откройте страницу "Продавцы бренда" на OZON Seller:\nhttps://seller.ozon.ru/app/brand/sellers');
-        return;
+      const scanBtn = document.getElementById('btnScanBrands');
+      scanBtn.disabled = true;
+      scanBtn.textContent = 'Открываю...';
+      try {
+        const tab = await ensureSellersPage();
+        scanBtn.textContent = 'Сканирую...';
+        await ensureContentScript(tab.id);
+        safeSendToTab(tab.id, { action: 'scanBrands' });
+      } catch (e) {
+        console.log('[OBG] Scan error:', e);
+        scanBtn.disabled = false;
+        scanBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z"/></svg> Найти бренды на странице`;
+        alert('Не удалось открыть страницу. Попробуйте вручную.');
       }
-      document.getElementById('btnScanBrands').disabled = true;
-      document.getElementById('btnScanBrands').textContent = 'Сканирую...';
-      await ensureContentScript(tab.id);
-      safeSendToTab(tab.id, { action: 'scanBrands' });
     });
 
     // Add brand
@@ -470,15 +552,22 @@
 
     // Start
     document.getElementById('btnStart').addEventListener('click', async () => {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.url || !tab.url.includes('seller.ozon.ru/app/brand/sellers')) {
-        alert('Откройте страницу "Продавцы бренда" на OZON Seller:\nhttps://seller.ozon.ru/app/brand/sellers');
-        return;
+      techLogLines = [];
+      const btn = document.getElementById('btnStart');
+      btn.disabled = true;
+      btn.textContent = 'Открываю...';
+      try {
+        const tab = await ensureSellersPage();
+        await ensureContentScript(tab.id);
+        safeSendToTab(tab.id, { action: 'start', config });
+        setRunningState(true);
+      } catch (e) {
+        console.log('[OBG] Start error:', e);
+        alert('Не удалось открыть страницу OZON Seller. Попробуйте вручную.');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg> Сканировать`;
       }
-      techLogLines = []; // Clear tech log on new session
-      await ensureContentScript(tab.id);
-      safeSendToTab(tab.id, { action: 'start', config });
-      setRunningState(true);
     });
 
     // Stop
@@ -488,6 +577,61 @@
         safeSendToTab(tab.id, { action: 'stop' });
       }
       setRunningState(false);
+    });
+
+    // ── Products tab ──
+    // Product complaint text
+    document.getElementById('productComplaintText').addEventListener('change', async (e) => {
+      config.productComplaintText = e.target.value.trim();
+      await saveConfig();
+    });
+
+    // Product file select
+    document.getElementById('btnProductFileSelect').addEventListener('click', () => {
+      document.getElementById('productFile').click();
+    });
+
+    document.getElementById('productFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        config.productFileData = reader.result;
+        config.productFileName = file.name;
+        document.getElementById('productFileName').textContent = file.name;
+        await saveConfig();
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // Start products scan
+    document.getElementById('btnStartProducts').addEventListener('click', async () => {
+      const btn = document.getElementById('btnStartProducts');
+      btn.disabled = true;
+      btn.textContent = 'Открываю...';
+      try {
+        const tab = await ensureProductsPage();
+        await ensureProductContentScript(tab.id);
+        safeSendToTab(tab.id, { action: 'startProducts', config });
+        document.getElementById('btnStartProducts').style.display = 'none';
+        document.getElementById('btnStopProducts').style.display = 'flex';
+      } catch (e) {
+        console.log('[OBG] Products start error:', e);
+        alert('Не удалось открыть страницу товаров. Попробуйте вручную.');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg> Сканировать товары`;
+      }
+    });
+
+    // Stop products scan
+    document.getElementById('btnStopProducts').addEventListener('click', async () => {
+      const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/app/brand-products/*' });
+      for (const tab of tabs) {
+        safeSendToTab(tab.id, { action: 'stopProducts' });
+      }
+      document.getElementById('btnStartProducts').style.display = 'flex';
+      document.getElementById('btnStopProducts').style.display = 'none';
     });
 
     // Export settings
@@ -673,6 +817,24 @@
     if (msg.action === 'techLog') {
       techLogLines.push(msg.text);
       if (techLogLines.length > 500) techLogLines = techLogLines.slice(-500);
+    }
+
+    // Product stats
+    if (msg.action === 'updateProductStats') {
+      document.getElementById('productStatsCard').style.display = 'block';
+      document.getElementById('pStatTotal').textContent = msg.stats.total || 0;
+      document.getElementById('pStatViolators').textContent = msg.stats.violators || 0;
+      document.getElementById('pStatWhitelisted').textContent = msg.stats.whitelisted || 0;
+      document.getElementById('pStatComplained').textContent = msg.stats.complained || 0;
+    }
+
+    if (msg.action === 'doneProducts') {
+      document.getElementById('btnStartProducts').style.display = 'flex';
+      document.getElementById('btnStopProducts').style.display = 'none';
+      loadConfig().then((c) => {
+        config = c;
+        renderLog();
+      });
     }
 
     if (msg.action === 'scanBrandsResult') {

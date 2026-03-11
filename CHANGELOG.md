@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.5.0] - 2026-03-11
+
+### Added
+- **Вкладка «Товары»** — новый модуль жалоб на товары со страницы `brand-products/all`
+- **`content-products.js`** — отдельный content script для парсинга таблицы товаров (7 колонок: название+SKU, дата, бренд, продавец, цена покуп., цена продавца, меню)
+- **Настройки жалобы на товар** — отдельный текст жалобы (`productComplaintText`) и файл (`productFileData`) для товарных жалоб
+- **Фильтр по Whitelist** — товары продавцов из Whitelist пропускаются (зелёная подсветка), остальные — жалоба (красная)
+- **Авто-навигация** — кнопки «Сканировать» и «Найти бренды» автоматически открывают нужную страницу OZON
+- **`ensureOzonPage()`** — универсальная навигация: ищет вкладку → навигирует текущую → создаёт новую
+- **`ensureProductsPage()`** — навигация на `brand-products/all`
+- **`ensureProductContentScript()`** — инжект `content-products.js`
+- **project.md** — полная карта проекта: архитектура, функции, селекторы, config schema
+
+### Changed
+- **manifest.json** — добавлен content_scripts match для `brand-products/*`
+- **service-worker.js** — relay: `updateProductStats`, `doneProducts`
+- **popup.html** — 7 вкладок (+ Товары), `btn--warning` стиль
+- **popup.js** — `DEFAULT_CONFIG` расширен: `productComplaintText`, `productFileData`, `productFileName`
+- **Плавающая панель товаров** — оранжевая тема (отличается от синей sellers)
+
 ## [1.4.0] - 2026-02-14
 
 ### Added
