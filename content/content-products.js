@@ -144,7 +144,7 @@
         highlightRow(product.rowElement, 'violator');
         log(`✗ ${product.name.substring(0, 40)} — продавец: ${product.seller}`, 'danger');
 
-        if (config.mode === 'complain' && !config.dryRun) {
+        if ((config.productMode || config.mode) === 'complain' && !config.dryRun) {
           await fileProductComplaint(product);
         }
 
@@ -322,20 +322,22 @@
       await sleep(2000);
       if (shouldStop) return;
 
-      // Attach file
-      const brand = config.brands.find(
-        (b) => b.name.toLowerCase() === product.brand.toLowerCase()
-      );
+      // Attach file (skip if config.skipProductFile is true)
+      if (!config.skipProductFile) {
+        const brand = config.brands.find(
+          (b) => b.name.toLowerCase() === product.brand.toLowerCase()
+        );
+        const fileData = config.productFileData || (brand && brand.fileData);
+        const fileName = config.productFileName || (brand && brand.fileName);
 
-      // Use product-specific file first, fallback to brand file
-      const fileData = config.productFileData || (brand && brand.fileData);
-      const fileName = config.productFileName || (brand && brand.fileName);
-
-      if (fileData) {
-        await attachFile(fileData, fileName);
-        log(`  ⏳ Ожидание загрузки файла (8с)...`);
-        await sleep(8000);
-        if (shouldStop) return;
+        if (fileData) {
+          await attachFile(fileData, fileName);
+          log(`  ⏳ Ожидание загрузки файла (8с)...`);
+          await sleep(8000);
+          if (shouldStop) return;
+        }
+      } else {
+        log(`  Файл не прикладывается (настройка)`);
       }
 
       // Click submit

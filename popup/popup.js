@@ -1,35 +1,35 @@
-// OZON Brand Guard — Popup Script
+// OZON Brand Guard — Popup Script v2.0.0
 // Автор: firayzer (https://t.me/firayzer)
 
 (function () {
   'use strict';
 
-  // ── Default config ──
   const DEFAULT_CONFIG = {
     brands: [],
-    whitelist: [
-      { value: 'Ozon', type: 'name' }
-    ],
+    whitelist: [{ value: 'Ozon', type: 'name' }],
     bannedCountries: ['CN'],
     useCountryFilter: true,
     defaultComplaint: 'Продажа подделок на мой бренд',
     productComplaintText: '',
     productFileData: null,
     productFileName: '',
-    delaySeconds: 20,
+    skipProductFile: false,
+    delaySeconds: 15,
     mode: 'scan',
+    productMode: 'scan',
     dryRun: false,
     scheduleEnabled: false,
     scheduleInterval: 6,
+    productScheduleEnabled: false,
+    productScheduleInterval: 6,
     notificationsEnabled: true,
     log: []
   };
 
   const MAX_LOG_ENTRIES = 5000;
-
   let config = {};
   let accumulatedBrands = {};
-  let techLogLines = []; // Technical logs from current session
+  let techLogLines = [];
 
   // ── Init ──
   async function init() {
@@ -40,128 +40,82 @@
     updateStatusFromBackground();
   }
 
-  // ── Ensure content script is injected ──
-  async function ensureContentScript(tabId) {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content/content.js']
-      });
-      await chrome.scripting.insertCSS({
-        target: { tabId },
-        files: ['content/content.css']
-      });
-    } catch (e) {
-      console.log('[OBG] Content script inject:', e.message);
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-
-  // Navigate to a specific OZON page, returns tab
+  // ── Navigation ──
   async function ensureOzonPage(targetUrl, urlCheck) {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-    if (activeTab && activeTab.url && activeTab.url.includes(urlCheck)) {
-      return activeTab;
-    }
-
+    if (activeTab && activeTab.url && activeTab.url.includes(urlCheck)) return activeTab;
     const existing = await chrome.tabs.query({ url: targetUrl + '*' });
     if (existing.length > 0) {
       await chrome.tabs.update(existing[0].id, { active: true });
       await new Promise((r) => setTimeout(r, 1000));
       return existing[0];
     }
-
     if (activeTab && activeTab.url && activeTab.url.includes('seller.ozon.ru')) {
       await chrome.tabs.update(activeTab.id, { url: targetUrl });
       await waitForTabLoad(activeTab.id);
       return activeTab;
     }
-
     const newTab = await chrome.tabs.create({ url: targetUrl });
     await waitForTabLoad(newTab.id);
     return newTab;
   }
 
-  async function ensureSellersPage() {
-    return ensureOzonPage('https://seller.ozon.ru/app/brand/sellers', 'seller.ozon.ru/app/brand/sellers');
-  }
-
-  async function ensureProductsPage() {
-    return ensureOzonPage('https://seller.ozon.ru/app/brand-products/all', 'seller.ozon.ru/app/brand-products');
-  }
-
-  // Ensure content-products.js is injected
-  async function ensureProductContentScript(tabId) {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content/content-products.js']
-      });
-      await chrome.scripting.insertCSS({
-        target: { tabId },
-        files: ['content/content.css']
-      });
-    } catch (e) {
-      console.log('[OBG] Product content script inject:', e.message);
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
+  function ensureSellersPage() { return ensureOzonPage('https://seller.ozon.ru/app/brand/sellers', 'seller.ozon.ru/app/brand/sellers'); }
+  function ensureProductsPage() { return ensureOzonPage('https://seller.ozon.ru/app/brand-products/all', 'seller.ozon.ru/app/brand-products'); }
 
   function waitForTabLoad(tabId) {
     return new Promise((resolve) => {
-      function listener(id, info) {
+      const listener = (id, info) => {
         if (id === tabId && info.status === 'complete') {
           chrome.tabs.onUpdated.removeListener(listener);
-          setTimeout(resolve, 2000); // extra wait for SPA rendering
+          setTimeout(resolve, 2000);
         }
-      }
+      };
       chrome.tabs.onUpdated.addListener(listener);
-      // Timeout safety — resolve after 15s regardless
-      setTimeout(() => {
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }, 15000);
+      setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 15000);
     });
   }
 
+  // ── Script injection ──
+  async function ensureContentScript(tabId) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] });
+      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content/content.css'] });
+    } catch (e) { console.log('[OBG] inject:', e.message); }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  async function ensureProductContentScript(tabId) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content-products.js'] });
+      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content/content.css'] });
+    } catch (e) { console.log('[OBG] product inject:', e.message); }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  // ── Messaging ──
   function safeSendToTab(tabId, msg) {
-    chrome.tabs.sendMessage(tabId, msg, () => {
-      if (chrome.runtime.lastError) {
-        console.log('[OBG] Tab message error:', chrome.runtime.lastError.message);
-      }
-    });
+    chrome.tabs.sendMessage(tabId, msg, () => { if (chrome.runtime.lastError) { /* ignore */ } });
   }
 
-  function safeSendRuntime(msg, callback) {
-    chrome.runtime.sendMessage(msg, (response) => {
-      if (chrome.runtime.lastError) {
-        console.log('[OBG] Runtime message error:', chrome.runtime.lastError.message);
-      }
-      if (callback) callback(response);
-    });
+  function safeSendRuntime(msg, cb) {
+    chrome.runtime.sendMessage(msg, (r) => { if (chrome.runtime.lastError) { /* ignore */ } if (cb) cb(r); });
   }
 
   // ── Storage ──
   async function loadConfig() {
     return new Promise((resolve) => {
-      chrome.storage.local.get('obgConfig', (result) => {
-        resolve({ ...DEFAULT_CONFIG, ...result.obgConfig });
-      });
+      chrome.storage.local.get('obgConfig', (result) => resolve({ ...DEFAULT_CONFIG, ...result.obgConfig }));
     });
   }
 
   async function saveConfig() {
     trimLog();
-    return new Promise((resolve) => {
-      chrome.storage.local.set({ obgConfig: config }, resolve);
-    });
+    return new Promise((resolve) => chrome.storage.local.set({ obgConfig: config }, resolve));
   }
 
   function trimLog() {
-    if (config.log && config.log.length > MAX_LOG_ENTRIES) {
-      config.log = config.log.slice(-MAX_LOG_ENTRIES);
-    }
+    if (config.log && config.log.length > MAX_LOG_ENTRIES) config.log = config.log.slice(-MAX_LOG_ENTRIES);
   }
 
   // ── Rendering ──
@@ -170,13 +124,30 @@
     renderWhitelist();
     renderCountryFilters();
     renderSettings();
-    renderProductSettings();
     renderLog();
   }
 
-  function renderProductSettings() {
-    document.getElementById('productComplaintText').value = config.productComplaintText || '';
-    document.getElementById('productFileName').textContent = config.productFileName || 'Файл не выбран';
+  function renderSettings() {
+    const q = (s) => document.querySelector(s);
+    const id = (s) => document.getElementById(s);
+
+    q(`input[name="mode"][value="${config.mode || 'scan'}"]`).checked = true;
+    q(`input[name="productMode"][value="${config.productMode || 'scan'}"]`).checked = true;
+
+    id('delayRange').value = config.delaySeconds;
+    id('delayValue').textContent = config.delaySeconds + 'с';
+    id('dryRun').checked = config.dryRun;
+    id('defaultComplaint').value = config.defaultComplaint;
+    id('notificationsEnabled').checked = config.notificationsEnabled;
+
+    id('scheduleEnabled').checked = config.scheduleEnabled;
+    id('scheduleInterval').value = config.scheduleInterval;
+    id('productScheduleEnabled').checked = config.productScheduleEnabled;
+    id('productScheduleInterval').value = config.productScheduleInterval;
+
+    id('productComplaintText').value = config.productComplaintText || '';
+    id('productFileName').textContent = config.productFileName || 'Из настроек бренда';
+    id('skipProductFile').checked = config.skipProductFile;
   }
 
   function renderBrands() {
@@ -195,12 +166,8 @@
       const fileName = clone.querySelector('.file-name');
       fileName.textContent = brand.fileName || 'Файл не выбран';
 
-      // Red highlight if no file
-      if (!brand.fileData) {
-        item.classList.add('brand-item--no-file');
-      }
+      if (!brand.fileData) item.classList.add('brand-item--no-file');
 
-      // File select button
       const fileBtn = clone.querySelector('.btn--small');
       const fileInput = clone.querySelector('.brand-file');
       fileBtn.addEventListener('click', () => fileInput.click());
@@ -208,7 +175,6 @@
       fileInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-
         const reader = new FileReader();
         reader.onload = async () => {
           brand.fileData = reader.result;
@@ -220,23 +186,15 @@
         reader.readAsDataURL(file);
       });
 
-      // Brand name change
       item.querySelector('.brand-name').addEventListener('change', async (e) => {
-        brand.name = e.target.value.trim();
-        await saveConfig();
+        brand.name = e.target.value.trim(); await saveConfig();
       });
-
-      // Complaint text change
       item.querySelector('.brand-complaint').addEventListener('change', async (e) => {
-        brand.complaint = e.target.value.trim();
-        await saveConfig();
+        brand.complaint = e.target.value.trim(); await saveConfig();
       });
-
-      // Delete
       clone.querySelector('.btn-icon--delete').addEventListener('click', async () => {
         config.brands = config.brands.filter((b) => b.id !== brand.id);
-        await saveConfig();
-        renderBrands();
+        await saveConfig(); renderBrands();
       });
 
       container.appendChild(clone);
@@ -246,44 +204,24 @@
   function renderWhitelist() {
     const container = document.getElementById('whitelistEntries');
     container.innerHTML = '';
-
     config.whitelist.forEach((entry, index) => {
       const div = document.createElement('div');
       div.className = 'whitelist-entry';
-      div.innerHTML = `
-        <span>${entry.value} <small style="color:#999">(${entry.type === 'inn' ? 'ИНН' : 'Имя'})</small></span>
-        <button class="btn-icon btn-icon--delete" data-index="${index}" title="Удалить">×</button>
-      `;
+      div.innerHTML = `<span>${entry.value} <small style="color:#999">(${entry.type === 'inn' ? 'ИНН' : 'Имя'})</small></span>
+        <button class="btn-icon btn-icon--delete" data-index="${index}" title="Удалить">×</button>`;
       container.appendChild(div);
     });
-
     container.querySelectorAll('.btn-icon--delete').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const idx = parseInt(btn.dataset.index, 10);
-        config.whitelist.splice(idx, 1);
-        await saveConfig();
-        renderWhitelist();
+        config.whitelist.splice(parseInt(btn.dataset.index, 10), 1);
+        await saveConfig(); renderWhitelist();
       });
     });
   }
 
   function renderCountryFilters() {
-    document.querySelectorAll('.country-filter').forEach((cb) => {
-      cb.checked = config.bannedCountries.includes(cb.value);
-    });
+    document.querySelectorAll('.country-filter').forEach((cb) => cb.checked = config.bannedCountries.includes(cb.value));
     document.getElementById('useCountryFilter').checked = config.useCountryFilter;
-  }
-
-  function renderSettings() {
-    document.querySelector(`input[name="mode"][value="${config.mode}"]`).checked = true;
-    document.getElementById('delayRange').value = config.delaySeconds;
-    document.getElementById('delayValue').textContent = config.delaySeconds + 'с';
-    document.getElementById('defaultComplaint').value = config.defaultComplaint;
-    document.getElementById('dryRun').checked = config.dryRun;
-    document.getElementById('notificationsEnabled').checked = config.notificationsEnabled;
-    document.getElementById('scheduleEnabled').checked = config.scheduleEnabled;
-    document.getElementById('scheduleInterval').value = config.scheduleInterval;
-    document.getElementById('scheduleOptions').style.display = config.scheduleEnabled ? 'block' : 'none';
   }
 
   function renderLog() {
@@ -291,7 +229,6 @@
     const emptyMsg = document.getElementById('logEmpty');
     const exportBtns = document.getElementById('logExportBtns');
     const countEl = document.getElementById('logCount');
-
     const logLen = (config.log || []).length;
     countEl.textContent = `${logLen} / ${MAX_LOG_ENTRIES}`;
 
@@ -308,36 +245,27 @@
     exportBtns.style.display = 'flex';
 
     tbody.innerHTML = '';
-    const sorted = [...config.log].reverse();
-    sorted.forEach((entry) => {
+    [...config.log].reverse().forEach((entry) => {
       const tr = document.createElement('tr');
-      const statusClass = entry.success ? 'status-ok' : 'status-fail';
-      const statusText = entry.success ? 'OK' : 'Ошибка';
-      tr.innerHTML = `
-        <td>${formatDate(entry.date)}</td>
-        <td><strong>${esc(entry.seller || '')}</strong></td>
-        <td>${esc(entry.inn || '')}</td>
-        <td>${esc(entry.brand || '')}</td>
-        <td>${esc(entry.country || '')}</td>
-        <td class="${statusClass}">${statusText}</td>
-      `;
+      const cls = entry.success ? 'status-ok' : 'status-fail';
+      const type = entry.country === 'товар' ? 'Товар' : (entry.country || 'Продавец');
+      tr.innerHTML = `<td>${formatDate(entry.date)}</td><td><strong>${esc(entry.seller || '')}</strong></td>
+        <td>${esc(entry.inn || '')}</td><td>${esc(entry.brand || '')}</td>
+        <td>${esc(type)}</td><td class="${cls}">${entry.success ? 'OK' : 'Ошибка'}</td>`;
       tbody.appendChild(tr);
     });
   }
 
   function renderTechLog() {
     const container = document.getElementById('techLogList');
-    if (techLogLines.length === 0) {
-      container.innerHTML = '<div class="tech-log-line" style="color:#666">Нет событий</div>';
-      return;
-    }
+    if (techLogLines.length === 0) { container.innerHTML = '<div class="tech-log-line" style="color:#666">Нет событий</div>'; return; }
     container.innerHTML = '';
     techLogLines.slice(-200).forEach((line) => {
       const div = document.createElement('div');
       let cls = 'tech-log-line';
       if (line.includes('[DIAG]')) cls += ' tech-log-line--diag';
-      else if (line.includes('✓') || line.includes('success')) cls += ' tech-log-line--success';
-      else if (line.includes('❌') || line.includes('error') || line.includes('Ошибка')) cls += ' tech-log-line--error';
+      else if (line.includes('✓')) cls += ' tech-log-line--success';
+      else if (line.includes('❌') || line.includes('Ошибка')) cls += ' tech-log-line--error';
       else if (line.includes('⏳') || line.includes('Остановлено')) cls += ' tech-log-line--warning';
       div.className = cls;
       div.textContent = line;
@@ -346,77 +274,46 @@
     container.scrollTop = container.scrollHeight;
   }
 
-  function esc(str) {
-    const d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
-  }
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function formatDate(ds) { const d = new Date(ds); return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); }
 
-  function formatDate(dateStr) {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  }
-
-  // ── Export functions ──
+  // ── Export ──
   function getLogData() {
     return (config.log || []).map((e) => ({
-      date: formatDate(e.date),
-      seller: e.seller || '',
-      inn: e.inn || '',
-      brand: e.brand || '',
-      country: e.country || '',
-      status: e.success ? 'OK' : 'Ошибка',
-      error: e.error || ''
+      date: formatDate(e.date), seller: e.seller || '', inn: e.inn || '',
+      brand: e.brand || '', type: e.country === 'товар' ? 'Товар' : (e.country || 'Продавец'),
+      status: e.success ? 'OK' : 'Ошибка', error: e.error || ''
     }));
   }
 
   function exportCSV() {
     const rows = getLogData();
-    const header = 'Дата;Продавец;ИНН;Бренд;Страна;Статус;Ошибка';
-    const lines = rows.map((r) =>
-      `${r.date};${r.seller};${r.inn};${r.brand};${r.country};${r.status};${r.error}`
-    );
-    const csv = '\uFEFF' + header + '\n' + lines.join('\n'); // BOM for Excel UTF-8
-    downloadFile(csv, 'ozon-brand-guard-complaints.csv', 'text/csv;charset=utf-8');
+    const csv = '\uFEFF' + 'Дата;Продавец;ИНН;Бренд;Тип;Статус;Ошибка\n' +
+      rows.map((r) => `${r.date};${r.seller};${r.inn};${r.brand};${r.type};${r.status};${r.error}`).join('\n');
+    downloadFile(csv, 'brand-guard-complaints.csv', 'text/csv;charset=utf-8');
   }
 
   function exportExcel() {
     const rows = getLogData();
-    let html = '<html><head><meta charset="UTF-8"></head><body>';
-    html += '<table border="1" style="border-collapse:collapse;font-family:Arial;font-size:12px">';
-    html += '<tr style="background:#005bff;color:#fff;font-weight:bold">';
-    html += '<th>Дата</th><th>Продавец</th><th>ИНН</th><th>Бренд</th><th>Страна</th><th>Статус</th><th>Ошибка</th>';
-    html += '</tr>';
+    let h = '<html><head><meta charset="UTF-8"></head><body><table border="1" style="border-collapse:collapse;font-family:Arial;font-size:12px">';
+    h += '<tr style="background:#005bff;color:#fff;font-weight:bold"><th>Дата</th><th>Продавец</th><th>ИНН</th><th>Бренд</th><th>Тип</th><th>Статус</th><th>Ошибка</th></tr>';
     rows.forEach((r) => {
-      const bg = r.status === 'OK' ? '#e8f5e9' : '#ffebee';
-      html += `<tr style="background:${bg}">`;
-      html += `<td>${esc(r.date)}</td><td>${esc(r.seller)}</td><td>${esc(r.inn)}</td>`;
-      html += `<td>${esc(r.brand)}</td><td>${esc(r.country)}</td>`;
-      html += `<td style="color:${r.status === 'OK' ? 'green' : 'red'};font-weight:bold">${r.status}</td>`;
-      html += `<td>${esc(r.error)}</td></tr>`;
+      h += `<tr style="background:${r.status === 'OK' ? '#e8f5e9' : '#ffebee'}"><td>${esc(r.date)}</td><td>${esc(r.seller)}</td><td>${esc(r.inn)}</td><td>${esc(r.brand)}</td><td>${esc(r.type)}</td><td style="color:${r.status === 'OK' ? 'green' : 'red'};font-weight:bold">${r.status}</td><td>${esc(r.error)}</td></tr>`;
     });
-    html += '</table></body></html>';
-    downloadFile(html, 'ozon-brand-guard-complaints.xls', 'application/vnd.ms-excel;charset=utf-8');
+    downloadFile(h + '</table></body></html>', 'brand-guard-complaints.xls', 'application/vnd.ms-excel;charset=utf-8');
   }
 
   function exportTXT() {
     const rows = getLogData();
-    const pad = (s, n) => (s + ' '.repeat(n)).substring(0, n);
-    let txt = pad('Дата', 18) + pad('Продавец', 30) + pad('ИНН', 15) + pad('Бренд', 20) + pad('Страна', 8) + pad('Статус', 10) + 'Ошибка\n';
-    txt += '-'.repeat(110) + '\n';
-    rows.forEach((r) => {
-      txt += pad(r.date, 18) + pad(r.seller, 30) + pad(r.inn, 15) + pad(r.brand, 20) + pad(r.country, 8) + pad(r.status, 10) + r.error + '\n';
-    });
-    downloadFile(txt, 'ozon-brand-guard-complaints.txt', 'text/plain;charset=utf-8');
+    const p = (s, n) => (s + ' '.repeat(n)).substring(0, n);
+    let t = p('Дата', 18) + p('Продавец', 30) + p('ИНН', 15) + p('Бренд', 20) + p('Тип', 10) + p('Статус', 10) + 'Ошибка\n' + '-'.repeat(110) + '\n';
+    rows.forEach((r) => { t += p(r.date, 18) + p(r.seller, 30) + p(r.inn, 15) + p(r.brand, 20) + p(r.type, 10) + p(r.status, 10) + r.error + '\n'; });
+    downloadFile(t, 'brand-guard-complaints.txt', 'text/plain;charset=utf-8');
   }
 
   function downloadFile(content, filename, type) {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
   }
 
@@ -432,7 +329,7 @@
       });
     });
 
-    // Sub-tabs (log section)
+    // Sub-tabs
     document.querySelectorAll('.sub-tab').forEach((tab) => {
       tab.addEventListener('click', () => {
         document.querySelectorAll('.sub-tab').forEach((t) => t.classList.remove('sub-tab--active'));
@@ -443,413 +340,228 @@
       });
     });
 
-    // Mode
-    document.querySelectorAll('input[name="mode"]').forEach((radio) => {
-      radio.addEventListener('change', async (e) => {
-        config.mode = e.target.value;
-        await saveConfig();
-      });
-    });
+    // ── Главная: Sellers ──
+    document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener('change', async (e) => { config.mode = e.target.value; await saveConfig(); }));
+    document.querySelectorAll('input[name="productMode"]').forEach((r) => r.addEventListener('change', async (e) => { config.productMode = e.target.value; await saveConfig(); }));
 
-    // Delay
-    document.getElementById('delayRange').addEventListener('input', (e) => {
-      document.getElementById('delayValue').textContent = e.target.value + 'с';
-    });
-    document.getElementById('delayRange').addEventListener('change', async (e) => {
-      config.delaySeconds = parseInt(e.target.value, 10);
-      await saveConfig();
-    });
+    document.getElementById('delayRange').addEventListener('input', (e) => document.getElementById('delayValue').textContent = e.target.value + 'с');
+    document.getElementById('delayRange').addEventListener('change', async (e) => { config.delaySeconds = parseInt(e.target.value, 10); await saveConfig(); });
+    document.getElementById('dryRun').addEventListener('change', async (e) => { config.dryRun = e.target.checked; await saveConfig(); });
 
-    // Scan brands from page
-    document.getElementById('btnScanBrands').addEventListener('click', async () => {
-      const scanBtn = document.getElementById('btnScanBrands');
-      scanBtn.disabled = true;
-      scanBtn.textContent = 'Открываю...';
-      try {
-        const tab = await ensureSellersPage();
-        scanBtn.textContent = 'Сканирую...';
-        await ensureContentScript(tab.id);
-        safeSendToTab(tab.id, { action: 'scanBrands' });
-      } catch (e) {
-        console.log('[OBG] Scan error:', e);
-        scanBtn.disabled = false;
-        scanBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z"/></svg> Найти бренды на странице`;
-        alert('Не удалось открыть страницу. Попробуйте вручную.');
-      }
-    });
-
-    // Add brand
-    document.getElementById('btnAddBrand').addEventListener('click', async () => {
-      const id = 'brand_' + Date.now();
-      config.brands.push({ id, name: '', complaint: '', fileData: null, fileName: '' });
-      await saveConfig();
-      renderBrands();
-    });
-
-    // Add whitelist
-    document.getElementById('btnAddWhitelist').addEventListener('click', async () => {
-      const input = document.getElementById('whitelistInput');
-      const val = input.value.trim();
-      if (!val) return;
-
-      const type = /^\d+$/.test(val) ? 'inn' : 'name';
-      config.whitelist.push({ value: val, type });
-      input.value = '';
-      await saveConfig();
-      renderWhitelist();
-    });
-
-    document.getElementById('whitelistInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        document.getElementById('btnAddWhitelist').click();
-      }
-    });
-
-    // Country filters
-    document.querySelectorAll('.country-filter').forEach((cb) => {
-      cb.addEventListener('change', async () => {
-        config.bannedCountries = Array.from(document.querySelectorAll('.country-filter:checked')).map((c) => c.value);
-        await saveConfig();
-      });
-    });
-
-    document.getElementById('useCountryFilter').addEventListener('change', async (e) => {
-      config.useCountryFilter = e.target.checked;
-      await saveConfig();
-    });
-
-    // Default complaint
-    document.getElementById('defaultComplaint').addEventListener('change', async (e) => {
-      config.defaultComplaint = e.target.value.trim();
-      await saveConfig();
-    });
-
-    // Dry run
-    document.getElementById('dryRun').addEventListener('change', async (e) => {
-      config.dryRun = e.target.checked;
-      await saveConfig();
-    });
-
-    // Notifications
-    document.getElementById('notificationsEnabled').addEventListener('change', async (e) => {
-      config.notificationsEnabled = e.target.checked;
-      await saveConfig();
-    });
-
-    // Schedule
-    document.getElementById('scheduleEnabled').addEventListener('change', async (e) => {
-      config.scheduleEnabled = e.target.checked;
-      document.getElementById('scheduleOptions').style.display = e.target.checked ? 'block' : 'none';
-      await saveConfig();
-      safeSendRuntime({ action: 'updateSchedule', config });
-    });
-
-    document.getElementById('scheduleInterval').addEventListener('change', async (e) => {
-      config.scheduleInterval = parseInt(e.target.value, 10);
-      await saveConfig();
-      safeSendRuntime({ action: 'updateSchedule', config });
-    });
-
-    // Start
+    // Start sellers
     document.getElementById('btnStart').addEventListener('click', async () => {
       techLogLines = [];
       const btn = document.getElementById('btnStart');
-      btn.disabled = true;
-      btn.textContent = 'Открываю...';
+      btn.disabled = true; btn.textContent = 'Открываю...';
       try {
         const tab = await ensureSellersPage();
         await ensureContentScript(tab.id);
         safeSendToTab(tab.id, { action: 'start', config });
         setRunningState(true);
-      } catch (e) {
-        console.log('[OBG] Start error:', e);
-        alert('Не удалось открыть страницу OZON Seller. Попробуйте вручную.');
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg> Сканировать`;
-      }
+      } catch (e) { alert('Не удалось открыть OZON Seller.'); }
+      finally { btn.disabled = false; btn.textContent = '▶ Запустить продавцов'; }
     });
 
-    // Stop
     document.getElementById('btnStop').addEventListener('click', async () => {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab) {
-        safeSendToTab(tab.id, { action: 'stop' });
-      }
+      const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/app/brand/sellers*' });
+      for (const t of tabs) safeSendToTab(t.id, { action: 'stop' });
       setRunningState(false);
     });
 
-    // ── Products tab ──
-    // Product complaint text
-    document.getElementById('productComplaintText').addEventListener('change', async (e) => {
-      config.productComplaintText = e.target.value.trim();
-      await saveConfig();
-    });
-
-    // Product file select
-    document.getElementById('btnProductFileSelect').addEventListener('click', () => {
-      document.getElementById('productFile').click();
-    });
-
-    document.getElementById('productFile').addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = async () => {
-        config.productFileData = reader.result;
-        config.productFileName = file.name;
-        document.getElementById('productFileName').textContent = file.name;
-        await saveConfig();
-      };
-      reader.readAsDataURL(file);
-    });
-
-    // Start products scan
+    // Start products
     document.getElementById('btnStartProducts').addEventListener('click', async () => {
+      techLogLines = [];
       const btn = document.getElementById('btnStartProducts');
-      btn.disabled = true;
-      btn.textContent = 'Открываю...';
+      btn.disabled = true; btn.textContent = 'Открываю...';
       try {
         const tab = await ensureProductsPage();
         await ensureProductContentScript(tab.id);
         safeSendToTab(tab.id, { action: 'startProducts', config });
         document.getElementById('btnStartProducts').style.display = 'none';
         document.getElementById('btnStopProducts').style.display = 'flex';
-      } catch (e) {
-        console.log('[OBG] Products start error:', e);
-        alert('Не удалось открыть страницу товаров. Попробуйте вручную.');
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg> Сканировать товары`;
-      }
+      } catch (e) { alert('Не удалось открыть страницу товаров.'); }
+      finally { btn.disabled = false; btn.textContent = '▶ Запустить товары'; }
     });
 
-    // Stop products scan
     document.getElementById('btnStopProducts').addEventListener('click', async () => {
       const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/app/brand-products/*' });
-      for (const tab of tabs) {
-        safeSendToTab(tab.id, { action: 'stopProducts' });
-      }
+      for (const t of tabs) safeSendToTab(t.id, { action: 'stopProducts' });
       document.getElementById('btnStartProducts').style.display = 'flex';
       document.getElementById('btnStopProducts').style.display = 'none';
     });
 
-    // Export settings
-    document.getElementById('btnExport').addEventListener('click', () => {
-      const data = JSON.stringify(config, null, 2);
-      downloadFile(data, 'ozon-brand-guard-settings.json', 'application/json');
+    // Schedule — sellers
+    document.getElementById('scheduleEnabled').addEventListener('change', async (e) => {
+      config.scheduleEnabled = e.target.checked; await saveConfig();
+      safeSendRuntime({ action: 'updateSchedule', config });
+    });
+    document.getElementById('scheduleInterval').addEventListener('change', async (e) => {
+      config.scheduleInterval = parseInt(e.target.value, 10); await saveConfig();
+      safeSendRuntime({ action: 'updateSchedule', config });
     });
 
-    // Import settings
-    document.getElementById('btnImport').addEventListener('click', () => {
-      document.getElementById('importFile').click();
+    // Schedule — products
+    document.getElementById('productScheduleEnabled').addEventListener('change', async (e) => {
+      config.productScheduleEnabled = e.target.checked; await saveConfig();
+      safeSendRuntime({ action: 'updateProductSchedule', config });
+    });
+    document.getElementById('productScheduleInterval').addEventListener('change', async (e) => {
+      config.productScheduleInterval = parseInt(e.target.value, 10); await saveConfig();
+      safeSendRuntime({ action: 'updateProductSchedule', config });
     });
 
-    document.getElementById('importFile').addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const text = await file.text();
+    // ── Настройки: Brands ──
+    document.getElementById('btnScanBrands').addEventListener('click', async () => {
+      const scanBtn = document.getElementById('btnScanBrands');
+      scanBtn.disabled = true; scanBtn.textContent = 'Открываю...';
       try {
-        const imported = JSON.parse(text);
-        config = { ...DEFAULT_CONFIG, ...imported };
-        await saveConfig();
-        renderAll();
-        alert('Настройки импортированы');
-      } catch {
-        alert('Ошибка чтения файла');
+        const tab = await ensureSellersPage();
+        scanBtn.textContent = 'Сканирую...';
+        await ensureContentScript(tab.id);
+        safeSendToTab(tab.id, { action: 'scanBrands' });
+      } catch (e) {
+        scanBtn.disabled = false;
+        scanBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z"/></svg> Найти бренды на странице`;
       }
     });
 
-    // Export complaint log
+    document.getElementById('btnAddBrand').addEventListener('click', async () => {
+      config.brands.push({ id: 'brand_' + Date.now(), name: '', complaint: '', fileData: null, fileName: '' });
+      await saveConfig(); renderBrands();
+    });
+
+    // Whitelist
+    document.getElementById('btnAddWhitelist').addEventListener('click', async () => {
+      const input = document.getElementById('whitelistInput');
+      const val = input.value.trim(); if (!val) return;
+      config.whitelist.push({ value: val, type: /^\d+$/.test(val) ? 'inn' : 'name' });
+      input.value = ''; await saveConfig(); renderWhitelist();
+    });
+    document.getElementById('whitelistInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('btnAddWhitelist').click(); });
+
+    document.querySelectorAll('.country-filter').forEach((cb) => cb.addEventListener('change', async () => {
+      config.bannedCountries = Array.from(document.querySelectorAll('.country-filter:checked')).map((c) => c.value);
+      await saveConfig();
+    }));
+    document.getElementById('useCountryFilter').addEventListener('change', async (e) => { config.useCountryFilter = e.target.checked; await saveConfig(); });
+
+    // Product settings
+    document.getElementById('productComplaintText').addEventListener('change', async (e) => { config.productComplaintText = e.target.value.trim(); await saveConfig(); });
+    document.getElementById('btnProductFileSelect').addEventListener('click', () => document.getElementById('productFile').click());
+    document.getElementById('productFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        config.productFileData = reader.result; config.productFileName = file.name;
+        document.getElementById('productFileName').textContent = file.name;
+        await saveConfig();
+      };
+      reader.readAsDataURL(file);
+    });
+    document.getElementById('skipProductFile').addEventListener('change', async (e) => { config.skipProductFile = e.target.checked; await saveConfig(); });
+
+    // General settings
+    document.getElementById('defaultComplaint').addEventListener('change', async (e) => { config.defaultComplaint = e.target.value.trim(); await saveConfig(); });
+    document.getElementById('notificationsEnabled').addEventListener('change', async (e) => { config.notificationsEnabled = e.target.checked; await saveConfig(); });
+
+    // Data management
+    document.getElementById('btnExport').addEventListener('click', () => downloadFile(JSON.stringify(config, null, 2), 'brand-guard-settings.json', 'application/json'));
+    document.getElementById('btnImport').addEventListener('click', () => document.getElementById('importFile').click());
+    document.getElementById('importFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      try { config = { ...DEFAULT_CONFIG, ...JSON.parse(await file.text()) }; await saveConfig(); renderAll(); alert('Импортировано'); }
+      catch { alert('Ошибка файла'); }
+    });
     document.getElementById('btnExportCSV').addEventListener('click', exportCSV);
     document.getElementById('btnExportExcel').addEventListener('click', exportExcel);
     document.getElementById('btnExportTXT').addEventListener('click', exportTXT);
-
-    // Clear log
-    document.getElementById('btnClearLog').addEventListener('click', async () => {
-      if (!confirm('Очистить историю жалоб?')) return;
-      config.log = [];
-      await saveConfig();
-      renderLog();
-    });
-
-    // Reset all
-    document.getElementById('btnResetAll').addEventListener('click', async () => {
-      if (!confirm('Сбросить ВСЕ настройки к значениям по умолчанию?')) return;
-      config = { ...DEFAULT_CONFIG };
-      await saveConfig();
-      renderAll();
-    });
+    document.getElementById('btnClearLog').addEventListener('click', async () => { if (!confirm('Очистить историю?')) return; config.log = []; await saveConfig(); renderLog(); });
+    document.getElementById('btnResetAll').addEventListener('click', async () => { if (!confirm('Сбросить ВСЕ настройки?')) return; config = { ...DEFAULT_CONFIG }; await saveConfig(); renderAll(); });
   }
 
   // ── State ──
   function setRunningState(running) {
     document.getElementById('btnStart').style.display = running ? 'none' : 'flex';
     document.getElementById('btnStop').style.display = running ? 'flex' : 'none';
-
     const indicator = document.getElementById('statusIndicator');
-    const dot = indicator.querySelector('.status-dot');
-    const text = indicator.querySelector('.status-text');
-
-    dot.className = 'status-dot ' + (running ? 'status-dot--running' : 'status-dot--idle');
-    text.textContent = running ? 'Работает...' : 'Готов';
+    indicator.querySelector('.status-dot').className = 'status-dot ' + (running ? 'status-dot--running' : 'status-dot--idle');
+    indicator.querySelector('.status-text').textContent = running ? 'Работает...' : 'Готов';
   }
 
   function updateStatusFromBackground() {
-    safeSendRuntime({ action: 'getStatus' }, (response) => {
-      if (response && response.running) {
-        setRunningState(true);
-      }
-    });
+    safeSendRuntime({ action: 'getStatus' }, (r) => { if (r && r.running) setRunningState(true); });
   }
 
-  // ── Scanned brands rendering ──
+  // ── Scanned brands ──
   function renderScannedBrands(pageInfo) {
     const container = document.getElementById('scannedBrandsList');
     container.innerHTML = '';
-
-    const brandList = Object.entries(accumulatedBrands)
-      .map(([name, count]) => ({ name, sellersCount: count }))
-      .sort((a, b) => b.sellersCount - a.sellersCount);
+    const brandList = Object.entries(accumulatedBrands).map(([name, count]) => ({ name, sellersCount: count })).sort((a, b) => b.sellersCount - a.sellersCount);
 
     if (pageInfo) {
-      const infoDiv = document.createElement('div');
-      infoDiv.className = 'scan-page-info';
-      infoDiv.innerHTML = `${pageInfo.from}-${pageInfo.to} из ${pageInfo.total}
-        ${pageInfo.to < pageInfo.total ? ' — перелистните и нажмите «Найти» снова' : ' — все просканированы'}`;
-      container.appendChild(infoDiv);
+      const d = document.createElement('div'); d.className = 'scan-page-info';
+      d.innerHTML = `${pageInfo.from}-${pageInfo.to} из ${pageInfo.total}${pageInfo.to < pageInfo.total ? ' — перелистните и нажмите снова' : ''}`;
+      container.appendChild(d);
     }
-
-    if (brandList.length === 0) {
-      container.innerHTML += '<p class="hint">Бренды не найдены</p>';
-      return;
-    }
+    if (brandList.length === 0) { container.innerHTML += '<p class="hint">Бренды не найдены</p>'; return; }
 
     brandList.forEach((brand) => {
-      const div = document.createElement('label');
-      div.className = 'scanned-brand';
-      const isAlreadyAdded = config.brands.some(
-        (b) => b.name.toLowerCase() === brand.name.toLowerCase()
-      );
-      div.innerHTML = `
-        <input type="checkbox" class="scanned-brand-cb" data-brand="${brand.name}" ${isAlreadyAdded ? 'checked disabled' : ''}>
-        <span class="scanned-brand__name">${brand.name}</span>
-        <span class="scanned-brand__sellers">${brand.sellersCount} продавцов</span>
-      `;
-      if (isAlreadyAdded) {
-        div.classList.add('scanned-brand--mine');
-        div.title = 'Уже добавлен';
-      }
+      const div = document.createElement('label'); div.className = 'scanned-brand';
+      const added = config.brands.some((b) => b.name.toLowerCase() === brand.name.toLowerCase());
+      div.innerHTML = `<input type="checkbox" class="scanned-brand-cb" data-brand="${brand.name}" ${added ? 'checked disabled' : ''}><span class="scanned-brand__name">${brand.name}</span><span class="scanned-brand__sellers">${brand.sellersCount}</span>`;
+      if (added) { div.classList.add('scanned-brand--mine'); div.title = 'Уже добавлен'; }
       container.appendChild(div);
     });
 
-    const actionsDiv = document.createElement('div');
-    actionsDiv.className = 'scanned-actions';
-    actionsDiv.innerHTML = `
-      <button class="btn btn--primary" id="btnApplyScannedBrands" style="flex:1">Отметить как свои</button>
-      <button class="btn btn--secondary" id="btnClearScanned">Сброс</button>
-    `;
-    container.appendChild(actionsDiv);
+    const ad = document.createElement('div'); ad.className = 'scanned-actions';
+    ad.innerHTML = `<button class="btn btn--primary" id="btnApplyScannedBrands" style="flex:1">Добавить выбранные</button><button class="btn btn--secondary" id="btnClearScanned">Сброс</button>`;
+    container.appendChild(ad);
 
     document.getElementById('btnApplyScannedBrands').addEventListener('click', async () => {
-      const checked = container.querySelectorAll('.scanned-brand-cb:checked:not(:disabled)');
       let added = 0;
-
-      for (const cb of checked) {
-        const brandName = cb.dataset.brand;
-        const exists = config.brands.some(
-          (b) => b.name.toLowerCase() === brandName.toLowerCase()
-        );
-        if (!exists) {
-          const id = 'brand_' + Date.now() + '_' + added;
-          config.brands.push({ id, name: brandName, complaint: '', fileData: null, fileName: '' });
-
-          const inWhitelist = config.whitelist.some(
-            (w) => w.value.toLowerCase() === brandName.toLowerCase()
-          );
-          if (!inWhitelist) {
-            config.whitelist.push({ value: brandName, type: 'name' });
-          }
+      for (const cb of container.querySelectorAll('.scanned-brand-cb:checked:not(:disabled)')) {
+        const n = cb.dataset.brand;
+        if (!config.brands.some((b) => b.name.toLowerCase() === n.toLowerCase())) {
+          config.brands.push({ id: 'brand_' + Date.now() + '_' + added, name: n, complaint: '', fileData: null, fileName: '' });
+          if (!config.whitelist.some((w) => w.value.toLowerCase() === n.toLowerCase())) config.whitelist.push({ value: n, type: 'name' });
           added++;
         }
       }
-
-      if (added > 0) {
-        await saveConfig();
-        renderBrands();
-        renderWhitelist();
-        renderScannedBrands(pageInfo);
-      }
+      if (added > 0) { await saveConfig(); renderBrands(); renderWhitelist(); renderScannedBrands(pageInfo); }
     });
-
-    document.getElementById('btnClearScanned').addEventListener('click', () => {
-      accumulatedBrands = {};
-      container.innerHTML = '';
-    });
+    document.getElementById('btnClearScanned').addEventListener('click', () => { accumulatedBrands = {}; container.innerHTML = ''; });
   }
 
-  // ── Message listener ──
+  // ── Messages ──
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === 'updateStats') {
-      document.getElementById('statsCard').style.display = 'block';
+      document.getElementById('statsCard').style.display = 'flex';
       document.getElementById('statTotal').textContent = msg.stats.total || 0;
       document.getElementById('statViolators').textContent = msg.stats.violators || 0;
       document.getElementById('statWhitelisted').textContent = msg.stats.whitelisted || 0;
       document.getElementById('statComplained').textContent = msg.stats.complained || 0;
     }
+    if (msg.action === 'done') { setRunningState(false); loadConfig().then((c) => { config = c; renderLog(); }); }
+    if (msg.action === 'logUpdate') { loadConfig().then((c) => { config = c; renderLog(); }); }
+    if (msg.action === 'techLog') { techLogLines.push(msg.text); if (techLogLines.length > 500) techLogLines = techLogLines.slice(-500); }
 
-    if (msg.action === 'done') {
-      setRunningState(false);
-      loadConfig().then((c) => {
-        config = c;
-        renderLog();
-      });
-    }
-
-    if (msg.action === 'logUpdate') {
-      loadConfig().then((c) => {
-        config = c;
-        renderLog();
-      });
-    }
-
-    // Technical log line from content script
-    if (msg.action === 'techLog') {
-      techLogLines.push(msg.text);
-      if (techLogLines.length > 500) techLogLines = techLogLines.slice(-500);
-    }
-
-    // Product stats
     if (msg.action === 'updateProductStats') {
-      document.getElementById('productStatsCard').style.display = 'block';
+      document.getElementById('productStatsCard').style.display = 'flex';
       document.getElementById('pStatTotal').textContent = msg.stats.total || 0;
       document.getElementById('pStatViolators').textContent = msg.stats.violators || 0;
       document.getElementById('pStatWhitelisted').textContent = msg.stats.whitelisted || 0;
       document.getElementById('pStatComplained').textContent = msg.stats.complained || 0;
     }
-
     if (msg.action === 'doneProducts') {
       document.getElementById('btnStartProducts').style.display = 'flex';
       document.getElementById('btnStopProducts').style.display = 'none';
-      loadConfig().then((c) => {
-        config = c;
-        renderLog();
-      });
+      loadConfig().then((c) => { config = c; renderLog(); });
     }
 
     if (msg.action === 'scanBrandsResult') {
-      const btn = document.getElementById('btnScanBrands');
-      btn.disabled = false;
-      btn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z"/></svg>
-        Найти бренды на странице
-      `;
-
-      if (msg.brands && msg.brands.length > 0) {
-        msg.brands.forEach((b) => {
-          accumulatedBrands[b.name] = (accumulatedBrands[b.name] || 0) + b.sellersCount;
-        });
-      }
+      const btn = document.getElementById('btnScanBrands'); btn.disabled = false;
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z"/></svg> Найти бренды на странице`;
+      if (msg.brands && msg.brands.length > 0) msg.brands.forEach((b) => accumulatedBrands[b.name] = (accumulatedBrands[b.name] || 0) + b.sellersCount);
       renderScannedBrands(msg.pageInfo || null);
     }
   });

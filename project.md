@@ -1,13 +1,13 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-11 | Версия: 1.5.0
+> Последнее обновление: 2026-03-12 | Версия: 2.0.0
 
 ## Архитектура
 
 ```
 Chrome Extension (Manifest V3)
-├── popup/          — UI расширения (6 вкладок)
+├── popup/          — UI расширения (4 вкладки: Главная, Настройки, Жалобы, Инфо)
 ├── content/        — Content script (работает на странице OZON)
 ├── background/     — Service Worker (планировщик, логи, relay сообщений)
 ├── options/        — Страница расширенных настроек (статичная)
@@ -160,7 +160,9 @@ Chrome Extension (Manifest V3)
   productComplaintText: '',           // отдельный текст для жалоб на товары
   productFileData: null,              // base64 файла для товарных жалоб
   productFileName: '',
-  delaySeconds: 20,
+  skipProductFile: false,             // не прикладывать файл (жалоба на копию карточки)
+  delaySeconds: 15,
+  productMode: 'scan',               // отдельный режим для товаров
   mode: 'scan' | 'complain',
   dryRun: false,
   scheduleEnabled: false,

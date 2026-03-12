@@ -140,6 +140,112 @@ a:hover {
   color: #1a1a1a;
 }
 
+.card--blue {
+  border-left: 4px solid #005bff;
+  position: relative;
+}
+
+.card--orange {
+  border-left: 4px solid #e65100;
+  position: relative;
+}
+
+.card__badge {
+  position: absolute;
+  top: -1px;
+  right: 12px;
+  background: #005bff;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 0 0 6px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.card__badge--orange {
+  background: #e65100;
+}
+
+.stats--mini {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0 0;
+  font-size: 11px;
+  color: #666;
+}
+
+.stats--mini strong {
+  font-size: 13px;
+}
+
+.text-danger { color: #ff3b30; }
+.text-success { color: #00cc44; }
+.text-info { color: #005bff; }
+
+.schedule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.schedule-row .toggle {
+  flex: 1;
+}
+
+.select--sm {
+  width: auto;
+  min-width: 60px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.divider {
+  height: 1px;
+  background: #e8e8e8;
+  margin: 12px 0;
+}
+
+.radio-group--compact {
+  display: flex;
+  gap: 0;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.radio-group--compact .radio {
+  flex: 1;
+  padding: 6px 8px;
+  margin: 0;
+  border-right: 1px solid #e0e0e0;
+  text-align: center;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: #f8f8f8;
+}
+
+.radio-group--compact .radio:last-child {
+  border-right: none;
+}
+
+.radio-group--compact .radio:has(input:checked) {
+  background: #005bff;
+  color: #fff;
+}
+
+.card--orange .radio-group--compact .radio:has(input:checked) {
+  background: #e65100;
+}
+
+.radio-group--compact .radio input {
+  display: none;
+}
+
 /* Hint */
 .hint {
   font-size: 12px;
