@@ -5,8 +5,12 @@
 (function () {
   'use strict';
 
-  if (window.__obgProductsLoaded) return;
-  window.__obgProductsLoaded = true;
+  // DOM-based guard: prevents double execution from manifest + programmatic injection
+  if (document.getElementById('__obg-products-guard')) return;
+  const guard = document.createElement('div');
+  guard.id = '__obg-products-guard';
+  guard.style.display = 'none';
+  document.documentElement.appendChild(guard);
 
   // ── State ──
   let config = null;
@@ -62,6 +66,10 @@
     switch (msg.action) {
       case 'startProducts':
         config = msg.config;
+        // CRITICAL: normalize productMode — never fall back to sellers' mode
+        if (config.productMode !== 'complain') {
+          config.productMode = 'scan';
+        }
         startProcess();
         break;
       case 'stopProducts':
@@ -69,6 +77,32 @@
         break;
     }
   });
+
+  // ── Ensure "Kabinet Brenda" mode ──
+  async function ensureBrandCabinet() {
+    const triggerEl = document.querySelector('[data-onboarding-target="headerSellerType"] .ct1110-a');
+    if (!triggerEl) return;
+    const text = triggerEl.textContent || '';
+    if (!text.includes('Продавец')) return;
+
+    log('Переключаемся на Кабинет бренда...');
+    triggerEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    await sleep(800);
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.textContent.trim() === 'Кабинет бренда') {
+        node.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        try { node.parentElement.click(); } catch (e) { /* ignore */ }
+        log('Кабинет бренда выбран, ожидаем переход...');
+        await sleep(3500);
+        return;
+      }
+    }
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    log('Кнопка Кабинет бренда не найдена — возможно уже в нужном режиме', 'warning');
+  }
 
   // ── Main process ──
   async function startProcess() {
@@ -80,7 +114,10 @@
 
     safeSend({ action: 'setRunning', running: true });
     showPanel();
-    log('Запуск сканирования товаров...');
+    await ensureBrandCabinet();
+    const modeLabel = config.productMode === 'complain' ? 'Сканирование + жалобы' : 'Только сканирование';
+    log(`Запуск: ${modeLabel} (productMode=${config.productMode}, dryRun=${config.dryRun})`);
+    log(`Whitelist: ${(config.whitelist || []).map(w => w.value).join(', ')}`);
 
     try {
       await processAllPages();
@@ -121,7 +158,11 @@
 
     while (!shouldStop) {
       log(`Обработка страницы ${pageNum}...`);
-      await waitForTable();
+      const table = await waitForTable();
+      if (!table) {
+        log('Таблица не найдена — все страницы обработаны', 'success');
+        break;
+      }
 
       const products = parseProductsTable();
       stats.total += products.length;
@@ -144,7 +185,7 @@
         highlightRow(product.rowElement, 'violator');
         log(`✗ ${product.name.substring(0, 40)} — продавец: ${product.seller}`, 'danger');
 
-        if ((config.productMode || config.mode) === 'complain' && !config.dryRun) {
+        if (config.productMode === 'complain' && !config.dryRun) {
           await fileProductComplaint(product);
         }
 
@@ -255,12 +296,31 @@
 
   // ── Whitelist check ──
   function checkWhitelist(sellerName) {
-    if (!sellerName || !config.whitelist) return false;
-    for (const entry of config.whitelist) {
-      if (entry.type === 'name' && sellerName.toLowerCase().includes(entry.value.toLowerCase())) {
-        return true;
+    if (!sellerName) return false;
+    const sellerLower = sellerName.trim().toLowerCase();
+
+    // Check whitelist entries
+    if (config.whitelist) {
+      for (const entry of config.whitelist) {
+        const valLower = entry.value.trim().toLowerCase();
+        if (entry.type === 'name' && (sellerLower.includes(valLower) || valLower.includes(sellerLower))) {
+          return true;
+        }
+        if (entry.type === 'inn' && sellerName.includes(entry.value)) {
+          return true;
+        }
       }
     }
+
+    // Also check brand names — seller matching any brand name = whitelisted
+    if (config.brands) {
+      for (const brand of config.brands) {
+        if (brand.name && sellerLower.includes(brand.name.trim().toLowerCase())) {
+          return true;
+        }
+      }
+    }
+
     return false;
   }
 
@@ -630,15 +690,22 @@
         await sleep(3000);
         return true;
       }
+
+      // If currentIndex is last numbered button — we're on the last page
+      if (currentIndex === pageBtns.length - 1) {
+        return false;
+      }
     }
 
-    // Fallback: look for next arrow button
+    // Fallback: look for next arrow button — only click if NOT disabled
     const allSvgBtns = document.querySelectorAll('.md5-s1');
     const lastSvgBtn = allSvgBtns[allSvgBtns.length - 1];
-    if (lastSvgBtn && lastSvgBtn.querySelector && lastSvgBtn.querySelector('svg')) {
+    if (lastSvgBtn && !lastSvgBtn.disabled
+        && lastSvgBtn.getAttribute('disabled') === null
+        && lastSvgBtn.getAttribute('aria-disabled') !== 'true'
+        && lastSvgBtn.querySelector && lastSvgBtn.querySelector('svg')) {
       lastSvgBtn.click();
       await sleep(3000);
-      // Verify page actually changed
       return true;
     }
 
@@ -653,7 +720,7 @@
       if (table && table.querySelectorAll('tbody tr').length > 0) return table;
       await sleep(500);
     }
-    throw new Error('Таблица товаров не найдена');
+    return null; // graceful: no throw, caller handles it
   }
 
   function sleep(ms) {

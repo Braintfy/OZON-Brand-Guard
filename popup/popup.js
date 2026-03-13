@@ -34,10 +34,22 @@
   // ── Init ──
   async function init() {
     config = await loadConfig();
+    techLogLines = await loadTechLogs();
     trimLog();
     renderAll();
     bindEvents();
     updateStatusFromBackground();
+  }
+
+  // ── Tech log persistence ──
+  function saveTechLogs() {
+    chrome.storage.local.set({ obgTechLog: techLogLines.slice(-500) });
+  }
+
+  function loadTechLogs() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get('obgTechLog', (result) => resolve(result.obgTechLog || []));
+    });
   }
 
   // ── Navigation ──
@@ -131,8 +143,14 @@
     const q = (s) => document.querySelector(s);
     const id = (s) => document.getElementById(s);
 
-    q(`input[name="mode"][value="${config.mode || 'scan'}"]`).checked = true;
-    q(`input[name="productMode"][value="${config.productMode || 'scan'}"]`).checked = true;
+    // Mode switches (button-based)
+    document.querySelectorAll('.mode-switch').forEach((sw) => {
+      const name = sw.dataset.name;
+      const val = config[name] || 'scan';
+      sw.querySelectorAll('.mode-switch__btn').forEach((btn) => {
+        btn.classList.toggle('mode-switch__btn--active', btn.dataset.value === val);
+      });
+    });
 
     id('delayRange').value = config.delaySeconds;
     id('delayValue').textContent = config.delaySeconds + 'с';
@@ -340,52 +358,61 @@
       });
     });
 
-    // ── Главная: Sellers ──
-    document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener('change', async (e) => { config.mode = e.target.value; await saveConfig(); }));
-    document.querySelectorAll('input[name="productMode"]').forEach((r) => r.addEventListener('change', async (e) => { config.productMode = e.target.value; await saveConfig(); }));
+    // ── Главная: Mode switches ──
+    document.querySelectorAll('.mode-switch').forEach((sw) => {
+      sw.querySelectorAll('.mode-switch__btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const name = sw.dataset.name; // 'mode' or 'productMode'
+          const value = btn.dataset.value; // 'scan' or 'complain'
+          config[name] = value;
+          await saveConfig();
+          sw.querySelectorAll('.mode-switch__btn').forEach((b) => b.classList.remove('mode-switch__btn--active'));
+          btn.classList.add('mode-switch__btn--active');
+        });
+      });
+    });
 
     document.getElementById('delayRange').addEventListener('input', (e) => document.getElementById('delayValue').textContent = e.target.value + 'с');
     document.getElementById('delayRange').addEventListener('change', async (e) => { config.delaySeconds = parseInt(e.target.value, 10); await saveConfig(); });
     document.getElementById('dryRun').addEventListener('change', async (e) => { config.dryRun = e.target.checked; await saveConfig(); });
 
-    // Start sellers
+    // Start sellers — delegate to background (popup may close during navigation)
     document.getElementById('btnStart').addEventListener('click', async () => {
-      techLogLines = [];
-      const btn = document.getElementById('btnStart');
-      btn.disabled = true; btn.textContent = 'Открываю...';
-      try {
-        const tab = await ensureSellersPage();
-        await ensureContentScript(tab.id);
-        safeSendToTab(tab.id, { action: 'start', config });
-        setRunningState(true);
-      } catch (e) { alert('Не удалось открыть OZON Seller.'); }
-      finally { btn.disabled = false; btn.textContent = '▶ Запустить продавцов'; }
+      techLogLines = []; saveTechLogs();
+      // Read mode from active button
+      const activeBtn = document.querySelector('.mode-switch[data-name="mode"] .mode-switch__btn--active');
+      if (activeBtn) config.mode = activeBtn.dataset.value;
+      if (config.mode !== 'complain') config.mode = 'scan';
+      await saveConfig();
+      safeSendRuntime({ action: 'launchSellers', config });
+      setRunningState(true);
     });
 
     document.getElementById('btnStop').addEventListener('click', async () => {
-      const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/app/brand/sellers*' });
+      // Send stop to all matching tabs
+      const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
       for (const t of tabs) safeSendToTab(t.id, { action: 'stop' });
+      safeSendRuntime({ action: 'setRunning', running: false });
       setRunningState(false);
     });
 
-    // Start products
+    // Start products — delegate to background
     document.getElementById('btnStartProducts').addEventListener('click', async () => {
-      techLogLines = [];
-      const btn = document.getElementById('btnStartProducts');
-      btn.disabled = true; btn.textContent = 'Открываю...';
-      try {
-        const tab = await ensureProductsPage();
-        await ensureProductContentScript(tab.id);
-        safeSendToTab(tab.id, { action: 'startProducts', config });
-        document.getElementById('btnStartProducts').style.display = 'none';
-        document.getElementById('btnStopProducts').style.display = 'flex';
-      } catch (e) { alert('Не удалось открыть страницу товаров.'); }
-      finally { btn.disabled = false; btn.textContent = '▶ Запустить товары'; }
+      techLogLines = []; saveTechLogs();
+      // Read productMode from active button
+      const activeBtn = document.querySelector('.mode-switch--orange .mode-switch__btn--active');
+      if (activeBtn) config.productMode = activeBtn.dataset.value;
+      if (config.productMode !== 'complain') config.productMode = 'scan';
+      await saveConfig();
+      safeSendRuntime({ action: 'launchProducts', config });
+      document.getElementById('btnStartProducts').style.display = 'none';
+      document.getElementById('btnStopProducts').style.display = 'flex';
     });
 
     document.getElementById('btnStopProducts').addEventListener('click', async () => {
-      const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/app/brand-products/*' });
+      const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
       for (const t of tabs) safeSendToTab(t.id, { action: 'stopProducts' });
+      safeSendRuntime({ action: 'setRunning', running: false });
       document.getElementById('btnStartProducts').style.display = 'flex';
       document.getElementById('btnStopProducts').style.display = 'none';
     });
@@ -477,6 +504,25 @@
     document.getElementById('btnExportTXT').addEventListener('click', exportTXT);
     document.getElementById('btnClearLog').addEventListener('click', async () => { if (!confirm('Очистить историю?')) return; config.log = []; await saveConfig(); renderLog(); });
     document.getElementById('btnResetAll').addEventListener('click', async () => { if (!confirm('Сбросить ВСЕ настройки?')) return; config = { ...DEFAULT_CONFIG }; await saveConfig(); renderAll(); });
+
+    // Tech log actions
+    document.getElementById('btnCopyTechLog').addEventListener('click', () => {
+      const text = techLogLines.join('\n');
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('btnCopyTechLog');
+        btn.textContent = 'Скопировано!';
+        setTimeout(() => btn.textContent = 'Копировать', 2000);
+      });
+    });
+    document.getElementById('btnSaveTechLog').addEventListener('click', () => {
+      const text = techLogLines.join('\n');
+      downloadFile(text, 'brand-guard-techlog-' + Date.now() + '.txt', 'text/plain;charset=utf-8');
+    });
+    document.getElementById('btnClearTechLog').addEventListener('click', () => {
+      techLogLines = [];
+      saveTechLogs();
+      renderTechLog();
+    });
   }
 
   // ── State ──
@@ -489,7 +535,25 @@
   }
 
   function updateStatusFromBackground() {
-    safeSendRuntime({ action: 'getStatus' }, (r) => { if (r && r.running) setRunningState(true); });
+    safeSendRuntime({ action: 'getStatus' }, (r) => {
+      if (!r) return;
+      if (r.running) setRunningState(true);
+      // Restore stats from background (survives popup close/reopen)
+      if (r.sellerStats) {
+        document.getElementById('statsCard').style.display = 'flex';
+        document.getElementById('statTotal').textContent = r.sellerStats.total || 0;
+        document.getElementById('statViolators').textContent = r.sellerStats.violators || 0;
+        document.getElementById('statWhitelisted').textContent = r.sellerStats.whitelisted || 0;
+        document.getElementById('statComplained').textContent = r.sellerStats.complained || 0;
+      }
+      if (r.productStats) {
+        document.getElementById('productStatsCard').style.display = 'flex';
+        document.getElementById('pStatTotal').textContent = r.productStats.total || 0;
+        document.getElementById('pStatViolators').textContent = r.productStats.violators || 0;
+        document.getElementById('pStatWhitelisted').textContent = r.productStats.whitelisted || 0;
+        document.getElementById('pStatComplained').textContent = r.productStats.complained || 0;
+      }
+    });
   }
 
   // ── Scanned brands ──
@@ -543,7 +607,16 @@
     }
     if (msg.action === 'done') { setRunningState(false); loadConfig().then((c) => { config = c; renderLog(); }); }
     if (msg.action === 'logUpdate') { loadConfig().then((c) => { config = c; renderLog(); }); }
-    if (msg.action === 'techLog') { techLogLines.push(msg.text); if (techLogLines.length > 500) techLogLines = techLogLines.slice(-500); }
+    if (msg.action === 'techLog') {
+      techLogLines.push(msg.text);
+      if (techLogLines.length > 500) techLogLines = techLogLines.slice(-500);
+      saveTechLogs();
+      // Update live if Техническая subtab is active
+      const techSubtab = document.getElementById('subtab-technical');
+      if (techSubtab && techSubtab.classList.contains('sub-content--active')) {
+        renderTechLog();
+      }
+    }
 
     if (msg.action === 'updateProductStats') {
       document.getElementById('productStatsCard').style.display = 'flex';

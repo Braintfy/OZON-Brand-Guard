@@ -209,41 +209,56 @@ a:hover {
   margin: 12px 0;
 }
 
-.radio-group--compact {
+/* Mode switch buttons */
+.mode-switch {
   display: flex;
-  gap: 0;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  overflow: hidden;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
 }
 
-.radio-group--compact .radio {
-  flex: 1;
-  padding: 6px 8px;
-  margin: 0;
-  border-right: 1px solid #e0e0e0;
-  text-align: center;
-  font-size: 12px;
+.mode-switch__btn {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  background: #fafafa;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  color: #666;
   cursor: pointer;
-  transition: all 0.2s;
-  background: #f8f8f8;
+  text-align: left;
+  transition: all 0.15s;
 }
 
-.radio-group--compact .radio:last-child {
-  border-right: none;
+.mode-switch__btn:hover {
+  border-color: #bbb;
+  background: #f0f0f0;
 }
 
-.radio-group--compact .radio:has(input:checked) {
-  background: #005bff;
-  color: #fff;
+.mode-switch__btn--active[data-value="scan"] {
+  border-color: #2e7d32;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px #2e7d32;
 }
 
-.card--orange .radio-group--compact .radio:has(input:checked) {
-  background: #e65100;
+.mode-switch__btn--active[data-value="complain"] {
+  border-color: #c62828;
+  background: #ffebee;
+  color: #c62828;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px #c62828;
 }
 
-.radio-group--compact .radio input {
-  display: none;
+.mode-switch--orange .mode-switch__btn--active[data-value="complain"] {
+  border-color: #e65100;
+  background: #fff3e0;
+  color: #e65100;
+  box-shadow: 0 0 0 1px #e65100;
 }
 
 /* Hint */
@@ -824,10 +839,45 @@ a:hover {
   gap: 10px;
 }
 
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.notice--brand {
+  background: #fff7e6;
+  border: 1px solid #f5a623;
+  color: #7a4f00;
+}
+
+.notice__icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.notice__text {
+  flex: 1;
+}
+
 .guide-step {
   display: flex;
   gap: 10px;
   align-items: flex-start;
+}
+
+.guide-step--required {
+  background: #fff7e6;
+  border: 1px solid #f5a623;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 4px;
 }
 
 .guide-step__num {
@@ -843,6 +893,11 @@ a:hover {
   justify-content: center;
   flex-shrink: 0;
   margin-top: 2px;
+}
+
+.guide-step__num--zero {
+  background: #f5a623;
+  font-size: 14px;
 }
 
 .guide-step__body {

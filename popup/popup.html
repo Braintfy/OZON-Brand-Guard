@@ -35,17 +35,21 @@
     <!-- ═══════════ Tab: ГЛАВНАЯ ═══════════ -->
     <section class="tab-content tab-content--active" id="tab-main">
 
+      <!-- Brand Cabinet prerequisite notice -->
+      <div class="notice notice--brand">
+        <span class="notice__icon">🏷️</span>
+        <span class="notice__text">Сначала откройте <strong>Кабинет бренда</strong> на OZON — расширение автоматически откроет нужные страницы и выполнит проверку</span>
+      </div>
+
       <!-- Sellers panel -->
       <div class="card card--blue">
         <div class="card__badge">Продавцы</div>
-        <div class="control-group">
-          <div class="radio-group radio-group--compact">
-            <label class="radio"><input type="radio" name="mode" value="scan" checked><span>Сканировать</span></label>
-            <label class="radio"><input type="radio" name="mode" value="complain"><span>+ Жалобы</span></label>
-          </div>
+        <div class="mode-switch" data-name="mode">
+          <button class="mode-switch__btn mode-switch__btn--active" data-value="scan">🔍 Только сканировать</button>
+          <button class="mode-switch__btn" data-value="complain">⚡ Сканировать + жалобы</button>
         </div>
         <div class="btn-group">
-          <button class="btn btn--primary btn--full" id="btnStart">▶ Запустить продавцов</button>
+          <button class="btn btn--primary btn--full" id="btnStart">▶ Проверка Брендов</button>
           <button class="btn btn--danger btn--full" id="btnStop" style="display:none">■ Остановить</button>
         </div>
         <div class="stats stats--mini" id="statsCard" style="display:none">
@@ -59,14 +63,12 @@
       <!-- Products panel -->
       <div class="card card--orange">
         <div class="card__badge card__badge--orange">Товары</div>
-        <div class="control-group">
-          <div class="radio-group radio-group--compact">
-            <label class="radio"><input type="radio" name="productMode" value="scan" checked><span>Сканировать</span></label>
-            <label class="radio"><input type="radio" name="productMode" value="complain"><span>+ Жалобы</span></label>
-          </div>
+        <div class="mode-switch mode-switch--orange" data-name="productMode">
+          <button class="mode-switch__btn mode-switch__btn--active" data-value="scan">🔍 Только сканировать</button>
+          <button class="mode-switch__btn" data-value="complain">⚡ Сканировать + жалобы</button>
         </div>
         <div class="btn-group">
-          <button class="btn btn--warning btn--full" id="btnStartProducts">▶ Запустить товары</button>
+          <button class="btn btn--warning btn--full" id="btnStartProducts">▶ Проверка Товаров</button>
           <button class="btn btn--danger btn--full" id="btnStopProducts" style="display:none">■ Остановить</button>
         </div>
         <div class="stats stats--mini" id="productStatsCard" style="display:none">
@@ -297,6 +299,11 @@
             <p class="hint">Логи сессии из плавающей панели на OZON:</p>
           </div>
           <div id="techLogList" class="tech-log-list"></div>
+          <div class="log-export" id="techLogActions" style="margin-top:8px">
+            <button class="btn btn--small btn--secondary" id="btnCopyTechLog">Копировать</button>
+            <button class="btn btn--small btn--secondary" id="btnSaveTechLog">Сохранить .txt</button>
+            <button class="btn btn--small btn--danger" id="btnClearTechLog">Очистить</button>
+          </div>
         </div>
       </div>
     </section>
@@ -306,6 +313,13 @@
       <div class="card">
         <h3>Быстрый старт</h3>
         <div class="guide-content">
+          <div class="guide-step guide-step--required">
+            <div class="guide-step__num guide-step__num--zero">!</div>
+            <div class="guide-step__body">
+              <strong>Откройте Кабинет бренда на OZON</strong>
+              <p>Перейдите на <a href="https://seller.ozon.ru/" target="_blank">seller.ozon.ru</a>, нажмите на «Продавец» в шапке → выберите <strong>Кабинет бренда</strong>. После этого расширение само откроет нужные страницы, переключит режим и выполнит проверку.</p>
+            </div>
+          </div>
           <div class="guide-step">
             <div class="guide-step__num">1</div>
             <div class="guide-step__body">
@@ -323,8 +337,8 @@
           <div class="guide-step">
             <div class="guide-step__num">3</div>
             <div class="guide-step__body">
-              <strong>Главная → Продавцы</strong>
-              <p>Выберите «Сканировать» для теста или «+ Жалобы» для боевого режима. Нажмите «Запустить» — страница откроется автоматически.</p>
+              <strong>Главная → Проверка Брендов / Товаров</strong>
+              <p>Выберите режим и нажмите кнопку. Расширение само откроет страницу в <strong>Кабинете бренда</strong> и начнёт сканирование. Прогресс виден на плавающей панели прямо на странице OZON.</p>
             </div>
           </div>
           <div class="guide-step">
@@ -347,6 +361,7 @@
       <div class="card">
         <h3>Советы</h3>
         <ul class="guide-tips">
+          <li><strong>Обязательно:</strong> перед первым запуском зайдите в <strong>Кабинет бренда</strong> на OZON (шапка → «Продавец» → Кабинет бренда)</li>
           <li>Начните с <strong>тестового режима</strong> (Dry Run) — убедитесь что нарушители определяются верно</li>
           <li>Если жалоба на <strong>копию карточки</strong> (без ТЗ) — включите «Не прикладывать файл» в настройках товаров</li>
           <li>Файл для товарных жалоб берётся <strong>из бренда</strong>, если не загружен отдельно</li>
@@ -362,7 +377,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>OZON Brand Guard v2.0.0</span>
+      <span>OZON Brand Guard v2.1.3</span>
       <a href="https://t.me/firayzer" target="_blank">by firayzer</a>
     </footer>
   </div>

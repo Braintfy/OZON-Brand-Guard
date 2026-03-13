@@ -5,9 +5,12 @@
 (function () {
   'use strict';
 
-  // Guard: prevent duplicate injection
-  if (window.__obgContentLoaded) return;
-  window.__obgContentLoaded = true;
+  // DOM-based guard: prevents double execution
+  if (document.getElementById('__obg-sellers-guard')) return;
+  const guard = document.createElement('div');
+  guard.id = '__obg-sellers-guard';
+  guard.style.display = 'none';
+  document.documentElement.appendChild(guard);
 
   // ── State ──
   let config = null;
@@ -412,6 +415,33 @@
     return null;
   }
 
+  // ── Ensure "Kabinet Brenda" mode ──
+  async function ensureBrandCabinet() {
+    const triggerEl = document.querySelector('[data-onboarding-target="headerSellerType"] .ct1110-a');
+    if (!triggerEl) return;
+    const text = triggerEl.textContent || '';
+    if (!text.includes('Продавец')) return; // already in brand cabinet
+
+    log('Переключаемся на Кабинет бренда...');
+    triggerEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    await sleep(800);
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.textContent.trim() === 'Кабинет бренда') {
+        node.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        try { node.parentElement.click(); } catch (e) { /* ignore */ }
+        log('Кабинет бренда выбран, ожидаем переход...');
+        await sleep(3500);
+        return;
+      }
+    }
+    // not found — close dropdown
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    log('Кнопка Кабинет бренда не найдена — возможно уже в нужном режиме', 'warning');
+  }
+
   // ── Main process ──
   async function startProcess() {
     if (isRunning) return;
@@ -422,6 +452,7 @@
 
     safeSend({ action: 'setRunning', running: true });
     showPanel();
+    await ensureBrandCabinet();
     log('Запуск сканирования...');
 
     try {
