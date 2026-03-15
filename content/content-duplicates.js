@@ -393,12 +393,15 @@
       price = priceMatch[1].replace(/\s/g, '').trim();
     }
 
-    // Extract seller name
+    // Extract seller name and seller URL
     let seller = '';
+    let sellerUrl = '';
     // Look for seller link or text
     const sellerLink = container.querySelector('a[href*="/seller/"]');
     if (sellerLink) {
       seller = sellerLink.textContent.trim();
+      const sHref = sellerLink.getAttribute('href') || '';
+      sellerUrl = sHref.startsWith('http') ? sHref : (sHref ? 'https://www.ozon.ru' + sHref : '');
     }
     if (!seller) {
       // Look for small text that might be seller name
@@ -407,9 +410,13 @@
         const t = st.textContent.trim();
         if (t.length > 2 && t.length < 50 && !t.includes('₽') && !t.includes('отзыв') &&
             !t.match(/^\d/) && st.children.length === 0) {
-          // Could be seller name - heuristic
           if (st.parentElement && st.parentElement.querySelector('a[href*="/seller/"]')) {
             seller = t;
+            const pLink = st.parentElement.querySelector('a[href*="/seller/"]');
+            if (pLink) {
+              const ph = pLink.getAttribute('href') || '';
+              sellerUrl = ph.startsWith('http') ? ph : (ph ? 'https://www.ozon.ru' + ph : '');
+            }
             break;
           }
         }
@@ -436,6 +443,7 @@
       name: name || `Товар ${sku}`,
       price,
       seller,
+      sellerUrl,
       url: fullUrl,
       image,
       rating,

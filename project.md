@@ -1,14 +1,14 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-15 | Версия: 3.0.0
+> Последнее обновление: 2026-03-15 | Версия: 3.1.0
 
 ## Архитектура
 
 ```
 Chrome Extension (Manifest V3)
 ├── popup/          — UI расширения (5 вкладок: Дубликаты, Отчёт, Настройки, Бренды, Инфо)
-├── content/        — Content scripts (3 скрипта: duplicates, sellers, products)
+├── content/        — Content scripts (4 скрипта: duplicates, batch-products, sellers, products)
 ├── background/     — Service Worker (планировщик, логи, relay, навигация дубликатов)
 ├── options/        — Страница расширенных настроек (статичная)
 ├── assets/         — Иконки (SVG щит + PNG 16/48/128)
@@ -18,7 +18,7 @@ Chrome Extension (Manifest V3)
 ## Файлы и их роли
 
 ### manifest.json
-- **Manifest V3**, version `3.0.0`
+- **Manifest V3**, version `3.1.0`
 - Permissions: `storage`, `alarms`, `notifications`, `activeTab`, `scripting`, `tabs`
 - Host: `https://seller.ozon.ru/*`, `https://www.ozon.ru/*`
 - Content scripts инжектятся программно через `chrome.scripting.executeScript`

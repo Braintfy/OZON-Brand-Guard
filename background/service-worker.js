@@ -35,6 +35,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       launchDuplicateSearch(msg.skus, msg.config);
       break;
 
+    case 'launchCurrentPage':
+      launchCurrentPageScan(msg.config);
+      break;
+
+    case 'launchBatchProducts':
+      launchBatchFromProducts(msg.config);
+      break;
+
+    case 'batchSkusCollected':
+      // SKUs collected from products table, now launch duplicate search
+      relayToExtensionPages(msg);
+      if (msg.skus && msg.skus.length > 0) {
+        // Save config before resetting state — launchDuplicateSearch checks isRunning
+        const savedConfig = duplicateScanState?.config || {};
+        // Reset isRunning so launchDuplicateSearch can proceed
+        isRunning = false;
+        duplicateScanState = null;
+        relayToExtensionPages({ action: 'techLog', text: `[Пакетный] 🚀 Начинаю поиск дубликатов по ${msg.skus.length} товарам...` });
+        launchDuplicateSearch(msg.skus, savedConfig);
+      } else {
+        relayToExtensionPages({ action: 'techLog', text: `[Пакетный] ❌ SKU не найдены в таблице товаров` });
+        relayToExtensionPages({ action: 'doneDuplicates', results: [] });
+        isRunning = false;
+        duplicateScanState = null;
+      }
+      break;
+
     case 'stopDuplicates':
       stopDuplicateSearch();
       break;
@@ -323,6 +350,7 @@ async function launchDuplicateSearch(skus, config) {
   duplicateScanState = { skus, currentIndex: 0, results: [], config, tabId: null };
 
   console.log('[OBG] Launching duplicate search for', skus.length, 'SKUs');
+  relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] 🔍 Запускаю поиск дубликатов по ${skus.length} SKU...` });
   relayToExtensionPages({ action: 'updateDuplicateStats', stats: latestDuplicateStats });
   await processDuplicateSku(0);
 }
@@ -331,15 +359,19 @@ async function processDuplicateSku(index) {
   if (!duplicateScanState || index >= duplicateScanState.skus.length) {
     // All done
     isRunning = false;
+    const totalFound = duplicateScanState?.results?.length || 0;
+    relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ✅ Поиск завершён. Найдено ${totalFound} дубликатов` });
     relayToExtensionPages({ action: 'doneDuplicates', results: duplicateScanState?.results || [] });
-    console.log('[OBG] Duplicate search complete. Total found:', duplicateScanState?.results?.length || 0);
+    console.log('[OBG] Duplicate search complete. Total found:', totalFound);
     duplicateScanState = null;
     return;
   }
 
   const sku = duplicateScanState.skus[index];
+  const total = duplicateScanState.skus.length;
   const url = `https://www.ozon.ru/product/${sku}/`;
-  console.log('[OBG] Processing SKU', sku, `(${index + 1}/${duplicateScanState.skus.length})`);
+  console.log('[OBG] Processing SKU', sku, `(${index + 1}/${total})`);
+  relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] 📦 Обработка SKU ${sku} (${index + 1}/${total})...` });
 
   try {
     // Find or create tab on ozon.ru
@@ -404,7 +436,10 @@ function handleDuplicatePageResult(msg) {
   if (!duplicateScanState) return;
 
   const { sku, competitors, pageIndex } = msg;
-  console.log('[OBG] Page result for SKU', sku, '- found', competitors?.length || 0, 'competitors');
+  const found = competitors?.length || 0;
+  const processed = (pageIndex || 0) + 1;
+  const total = duplicateScanState.skus.length;
+  console.log('[OBG] Page result for SKU', sku, '- found', found, 'competitors');
 
   // Store results
   if (competitors && competitors.length > 0) {
@@ -413,25 +448,26 @@ function handleDuplicatePageResult(msg) {
     }
   }
 
+  // Log per-SKU result
+  relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ${found > 0 ? '🔴' : '🟢'} SKU ${sku}: ${found} дубликатов (${processed}/${total})` });
+
   // Update stats
-  latestDuplicateStats = {
-    total: duplicateScanState.skus.length,
-    processed: (pageIndex || 0) + 1,
-    found: duplicateScanState.results.length
-  };
+  latestDuplicateStats = { total, processed, found: duplicateScanState.results.length };
   relayToExtensionPages({ action: 'updateDuplicateStats', stats: latestDuplicateStats });
   relayToExtensionPages({ action: 'duplicatePageDone', sku, competitors: competitors || [], allResults: duplicateScanState.results });
 
   // Process next SKU (with delay)
-  const nextIndex = (pageIndex || 0) + 1;
-  if (nextIndex < duplicateScanState.skus.length) {
+  const nextIndex = processed;
+  if (nextIndex < total) {
     const delay = (duplicateScanState.config?.duplicateDelay || 3) * 1000;
     setTimeout(() => processDuplicateSku(nextIndex), delay);
   } else {
     // All done
     isRunning = false;
+    const totalFound = duplicateScanState.results.length;
+    relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ✅ Готово! Обработано ${total} SKU, найдено ${totalFound} дубликатов` });
     relayToExtensionPages({ action: 'doneDuplicates', results: duplicateScanState.results });
-    console.log('[OBG] Duplicate search complete. Total:', duplicateScanState.results.length);
+    console.log('[OBG] Duplicate search complete. Total:', totalFound);
     duplicateScanState = null;
   }
 }
@@ -446,6 +482,85 @@ function stopDuplicateSearch() {
   duplicateScanState = null;
   latestDuplicateStats = null;
   relayToExtensionPages({ action: 'doneDuplicates', results: [] });
+}
+
+// ── Launch current page scan (get SKU from active ozon.ru tab) ──
+async function launchCurrentPageScan(config) {
+  if (isRunning) { console.log('[OBG] Already running'); return; }
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTab || !activeTab.url) {
+      relayToExtensionPages({ action: 'doneDuplicates', results: [], error: 'Нет активной вкладки' });
+      return;
+    }
+    const url = activeTab.url;
+    const match = url.match(/ozon\.ru\/product\/(?:.*?[-/])?(\d{5,})/);
+    if (!match) {
+      relayToExtensionPages({ action: 'doneDuplicates', results: [], error: 'Откройте страницу товара на ozon.ru' });
+      return;
+    }
+    const sku = match[1];
+    console.log('[OBG] Current page SKU:', sku);
+    await launchDuplicateSearch([sku], config);
+  } catch (e) {
+    console.log('[OBG] launchCurrentPageScan error:', e.message);
+    relayToExtensionPages({ action: 'doneDuplicates', results: [], error: e.message });
+    isRunning = false;
+  }
+}
+
+// ── Launch batch from seller products page ──
+async function launchBatchFromProducts(config) {
+  if (isRunning) { console.log('[OBG] Already running'); return; }
+  isRunning = true;
+  latestDuplicateStats = { total: 0, processed: 0, found: 0 };
+  duplicateScanState = { skus: [], currentIndex: 0, results: [], config, tabId: null };
+  relayToExtensionPages({ action: 'updateDuplicateStats', stats: latestDuplicateStats });
+
+  console.log('[OBG] Launching batch from seller products page');
+  relayToExtensionPages({ action: 'techLog', text: `[Пакетный] 📦 Открываю страницу товаров seller.ozon.ru/app/products...` });
+  try {
+    // Find or open seller products page
+    let sellerTabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
+    let tabId;
+    if (sellerTabs.length > 0) {
+      tabId = sellerTabs[0].id;
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab.url.includes('/app/products')) {
+        await chrome.tabs.update(tabId, { url: 'https://seller.ozon.ru/app/products', active: true });
+        await waitForTabComplete(tabId);
+        await wait(2500);
+      } else {
+        await chrome.tabs.update(tabId, { active: true });
+        await wait(1000);
+      }
+    } else {
+      const tab = await chrome.tabs.create({ url: 'https://seller.ozon.ru/app/products' });
+      tabId = tab.id;
+      await waitForTabComplete(tabId);
+      await wait(3000);
+    }
+
+    // Inject batch collector script
+    relayToExtensionPages({ action: 'techLog', text: `[Пакетный] 🔧 Внедряю скрипт сбора SKU...` });
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content-batch-products.js'] });
+    } catch (e) { console.log('[OBG] inject batch:', e.message); }
+    await wait(500);
+
+    // Tell it to collect SKUs
+    relayToExtensionPages({ action: 'techLog', text: `[Пакетный] ▶ Запускаю сбор SKU из таблицы товаров...` });
+    chrome.tabs.sendMessage(tabId, { action: 'collectProductSkus' }, () => {
+      if (chrome.runtime.lastError) {
+        console.log('[OBG] batch msg:', chrome.runtime.lastError.message);
+        relayToExtensionPages({ action: 'techLog', text: `[Пакетный] ❌ Ошибка отправки команды: ${chrome.runtime.lastError.message}` });
+      }
+    });
+  } catch (e) {
+    console.log('[OBG] launchBatchFromProducts error:', e.message);
+    isRunning = false;
+    relayToExtensionPages({ action: 'doneDuplicates', results: [], error: e.message });
+  }
 }
 
 // ── Init on install ──

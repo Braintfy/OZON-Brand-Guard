@@ -250,13 +250,81 @@
 
     duplicateResults.forEach(item => {
       const tr = document.createElement('tr');
+      const sellerUrl = item.sellerUrl || (item.seller ? `https://www.ozon.ru/seller/${encodeURIComponent(item.seller)}/` : '');
       tr.innerHTML = `<td>${esc(item.sourceSku || '')}</td>
         <td><strong>${esc(item.sku || '')}</strong></td>
-        <td title="${esc(item.name || '')}">${esc((item.name || '').substring(0, 40))}${(item.name || '').length > 40 ? '...' : ''}</td>
         <td>${item.price ? esc(item.price) + ' ₽' : '—'}</td>
         <td>${esc(item.seller || '—')}</td>
-        <td><a href="${esc(item.url || '')}" target="_blank" style="color:#005bff">Открыть</a></td>`;
+        <td>${sellerUrl ? `<a href="${esc(sellerUrl)}" target="_blank" style="color:#005bff">Магазин</a>` : '—'}</td>
+        <td><a href="${esc(item.url || '')}" target="_blank" style="color:#005bff">Товар</a></td>`;
       tbody.appendChild(tr);
+    });
+
+    renderSellerGroups();
+  }
+
+  function renderSellerGroups() {
+    const container = document.getElementById('reportSellerGroups');
+    const emptyMsg = document.getElementById('reportSellersEmpty');
+    if (!container) return;
+
+    if (duplicateResults.length === 0) {
+      container.innerHTML = '';
+      if (emptyMsg) emptyMsg.style.display = 'block';
+      return;
+    }
+    if (emptyMsg) emptyMsg.style.display = 'none';
+
+    // Group by seller
+    const grouped = {};
+    duplicateResults.forEach(r => {
+      const key = r.seller || 'Неизвестный продавец';
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(r);
+    });
+
+    // Sort by count descending
+    const sorted = Object.entries(grouped).sort((a, b) => b[1].length - a[1].length);
+
+    container.innerHTML = '';
+    sorted.forEach(([seller, items]) => {
+      const group = document.createElement('div');
+      group.className = 'dup-group';
+
+      const sellerUrl = items[0]?.sellerUrl || (seller !== 'Неизвестный продавец' ? `https://www.ozon.ru/seller/${encodeURIComponent(seller)}/` : '');
+
+      group.innerHTML = `<div class="dup-group__header">
+        <div style="flex:1">
+          <strong>${esc(seller)}</strong>
+          ${sellerUrl ? ` <a href="${esc(sellerUrl)}" target="_blank" style="color:#005bff;font-size:11px">→ магазин</a>` : ''}
+        </div>
+        <span class="dup-group__count">${items.length} товаров</span>
+        <button class="btn btn--small btn--secondary obg-copy-seller-skus" style="margin-left:6px;padding:2px 8px;font-size:11px">📋 SKU</button>
+      </div>`;
+
+      const itemsDiv = document.createElement('div');
+      itemsDiv.className = 'dup-group__items';
+      items.forEach(item => {
+        const d = document.createElement('div');
+        d.className = 'dup-item';
+        d.innerHTML = `<span class="dup-item__sku">${esc(item.sku)}</span>
+          <span class="dup-item__price">${item.price ? item.price + ' ₽' : '—'}</span>
+          <span style="color:#888;font-size:11px;flex:1" title="${esc(item.sourceSku || '')}">← ${esc(item.sourceSku || '')}</span>
+          <a href="${esc(item.url)}" target="_blank" class="dup-item__link">→</a>`;
+        itemsDiv.appendChild(d);
+      });
+      group.appendChild(itemsDiv);
+      container.appendChild(group);
+
+      // Copy seller SKUs button
+      group.querySelector('.obg-copy-seller-skus').addEventListener('click', () => {
+        const skuList = [...new Set(items.map(i => i.sku))].join('\n');
+        navigator.clipboard.writeText(skuList).then(() => {
+          const btn = group.querySelector('.obg-copy-seller-skus');
+          btn.textContent = '✓';
+          setTimeout(() => btn.textContent = '📋 SKU', 1500);
+        });
+      });
     });
   }
 
@@ -469,29 +537,49 @@
     });
 
     // ═══════════ NEW: Duplicate search events ═══════════
+    let currentStrategy = 'manual';
+
+    // Strategy switcher
+    document.querySelectorAll('[data-name="dupStrategy"] .mode-switch__btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        currentStrategy = btn.dataset.value;
+        document.querySelectorAll('[data-name="dupStrategy"] .mode-switch__btn').forEach(b => b.classList.remove('mode-switch__btn--active'));
+        btn.classList.add('mode-switch__btn--active');
+        document.getElementById('strategyManual').style.display = currentStrategy === 'manual' ? 'block' : 'none';
+        document.getElementById('strategyCurrent').style.display = currentStrategy === 'current' ? 'block' : 'none';
+        document.getElementById('strategyBatch').style.display = currentStrategy === 'batch' ? 'block' : 'none';
+      });
+    });
+
     document.getElementById('dupDelayRange').addEventListener('input', (e) => document.getElementById('dupDelayValue').textContent = e.target.value + 'с');
     document.getElementById('dupDelayRange').addEventListener('change', async (e) => { config.duplicateDelay = parseInt(e.target.value, 10); await saveConfig(); });
     document.getElementById('skuInput').addEventListener('change', async (e) => { config.savedSkuInput = e.target.value; await saveConfig(); });
 
-    // Start duplicate search
+    // Start duplicate search (handles all 3 strategies)
     document.getElementById('btnStartDuplicates').addEventListener('click', async () => {
-      const raw = document.getElementById('skuInput').value;
-      const skus = raw.split(/[\s,;\n]+/).map(s => s.trim()).filter(s => /^\d{5,}$/.test(s));
-      if (skus.length === 0) { alert('Введите хотя бы один SKU (числовой артикул OZON)'); return; }
-
-      config.savedSkuInput = raw;
-      await saveConfig();
-
       techLogLines = []; saveTechLogs();
       duplicateResults = [];
       renderDuplicateQuickResults();
+
+      const dupConfig = { duplicateWhitelist: config.duplicateWhitelist, duplicateDelay: config.duplicateDelay };
+
+      if (currentStrategy === 'manual') {
+        const raw = document.getElementById('skuInput').value;
+        const skus = raw.split(/[\s,;\n]+/).map(s => s.trim()).filter(s => /^\d{5,}$/.test(s));
+        if (skus.length === 0) { alert('Введите хотя бы один SKU (числовой артикул OZON)'); return; }
+        config.savedSkuInput = raw;
+        await saveConfig();
+        safeSendRuntime({ action: 'launchDuplicates', skus, config: dupConfig });
+      } else if (currentStrategy === 'current') {
+        safeSendRuntime({ action: 'launchCurrentPage', config: dupConfig });
+      } else if (currentStrategy === 'batch') {
+        safeSendRuntime({ action: 'launchBatchProducts', config: dupConfig });
+      }
 
       document.getElementById('btnStartDuplicates').style.display = 'none';
       document.getElementById('btnStopDuplicates').style.display = 'flex';
       document.getElementById('dupProgressCard').style.display = 'block';
       setRunningState(true);
-
-      safeSendRuntime({ action: 'launchDuplicates', skus, config: { duplicateWhitelist: config.duplicateWhitelist, duplicateDelay: config.duplicateDelay } });
     });
 
     // Stop duplicate search
@@ -531,6 +619,19 @@
       document.querySelector('.tab[data-tab="report"]').classList.add('tab--active');
       document.getElementById('tab-report').classList.add('tab-content--active');
       renderDuplicateReport(); renderTechLog();
+    });
+
+    // Report sub-tabs (Table / By Sellers)
+    document.querySelectorAll('.sub-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const parent = tab.closest('.card') || tab.parentElement;
+        parent.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('sub-tab--active'));
+        parent.querySelectorAll('.sub-content').forEach(c => c.classList.remove('sub-content--active'));
+        tab.classList.add('sub-tab--active');
+        const target = document.getElementById('subtab-' + tab.dataset.subtab);
+        if (target) target.classList.add('sub-content--active');
+        if (tab.dataset.subtab === 'report-sellers') renderSellerGroups();
+      });
     });
 
     // Clear report
@@ -693,12 +794,18 @@
   }
 
   // ── NEW: Duplicate export functions ──
+  function getSellerLink(seller) {
+    if (!seller) return '';
+    return `https://www.ozon.ru/seller/${encodeURIComponent(seller)}/`;
+  }
+
   function exportDuplicatesExcel() {
     if (duplicateResults.length === 0) return;
     let h = '<html><head><meta charset="UTF-8"></head><body><table border="1" style="border-collapse:collapse;font-family:Arial;font-size:12px">';
-    h += '<tr style="background:#005bff;color:#fff;font-weight:bold"><th>Мой SKU</th><th>SKU дубликата</th><th>Название</th><th>Цена</th><th>Продавец</th><th>Ссылка</th></tr>';
+    h += '<tr style="background:#005bff;color:#fff;font-weight:bold"><th>Мой SKU</th><th>SKU дубликата</th><th>Цена</th><th>Магазин-копист</th><th>Ссылка на магазин</th><th>Ссылка на товар</th></tr>';
     duplicateResults.forEach(r => {
-      h += `<tr><td>${esc(r.sourceSku || '')}</td><td>${esc(r.sku || '')}</td><td>${esc(r.name || '')}</td><td>${r.price || ''}</td><td>${esc(r.seller || '')}</td><td><a href="${esc(r.url || '')}">${esc(r.url || '')}</a></td></tr>`;
+      const sellerUrl = r.sellerUrl || getSellerLink(r.seller);
+      h += `<tr><td>${esc(r.sourceSku || '')}</td><td>${esc(r.sku || '')}</td><td>${r.price || ''}</td><td>${esc(r.seller || '—')}</td><td>${sellerUrl ? `<a href="${esc(sellerUrl)}">${esc(sellerUrl)}</a>` : '—'}</td><td><a href="${esc(r.url || '')}">${esc(r.url || '')}</a></td></tr>`;
     });
     const ts = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
     downloadFile(h + '</table></body></html>', `duplicates_${ts}.xls`, 'application/vnd.ms-excel;charset=utf-8');
@@ -706,8 +813,11 @@
 
   function exportDuplicatesCSV() {
     if (duplicateResults.length === 0) return;
-    const csv = '\uFEFF' + 'Мой SKU;SKU дубликата;Название;Цена;Продавец;Ссылка\n' +
-      duplicateResults.map(r => `${r.sourceSku || ''};${r.sku || ''};${(r.name || '').replace(/;/g, ',')};${r.price || ''};${(r.seller || '').replace(/;/g, ',')};${r.url || ''}`).join('\n');
+    const csv = '\uFEFF' + 'Мой SKU;SKU дубликата;Цена;Магазин-копист;Ссылка на магазин;Ссылка на товар\n' +
+      duplicateResults.map(r => {
+        const sellerUrl = r.sellerUrl || getSellerLink(r.seller);
+        return `${r.sourceSku || ''};${r.sku || ''};${r.price || ''};${(r.seller || '').replace(/;/g, ',')};${sellerUrl};${r.url || ''}`;
+      }).join('\n');
     const ts = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
     downloadFile(csv, `duplicates_${ts}.csv`, 'text/csv;charset=utf-8');
   }
@@ -799,6 +909,15 @@
   // ── Messages ──
   chrome.runtime.onMessage.addListener((msg) => {
     // ── NEW: Duplicate search messages ──
+    if (msg.action === 'batchSkusCollected') {
+      // Batch phase 1 complete — SKUs collected, now searching duplicates
+      const count = msg.skus?.length || 0;
+      document.getElementById('dupProgressCard').style.display = 'block';
+      if (count > 0) {
+        updateDuplicateProgress({ total: count, processed: 0, found: 0 });
+      }
+    }
+
     if (msg.action === 'updateDuplicateStats') {
       document.getElementById('dupProgressCard').style.display = 'block';
       updateDuplicateProgress(msg.stats);
