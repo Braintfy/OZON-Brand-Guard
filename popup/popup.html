@@ -26,19 +26,173 @@
 
     <!-- Tabs -->
     <nav class="tabs">
-      <button class="tab tab--active" data-tab="main">Главная</button>
+      <button class="tab tab--active" data-tab="main">Дубликаты</button>
+      <button class="tab" data-tab="report">Отчёт</button>
       <button class="tab" data-tab="settings">Настройки</button>
-      <button class="tab" data-tab="log">Жалобы</button>
+      <button class="tab" data-tab="legacy">Бренды</button>
       <button class="tab" data-tab="guide">Инфо</button>
     </nav>
 
-    <!-- ═══════════ Tab: ГЛАВНАЯ ═══════════ -->
+    <!-- ═══════════ Tab: ДУБЛИКАТЫ (ГЛАВНАЯ) ═══════════ -->
     <section class="tab-content tab-content--active" id="tab-main">
 
-      <!-- Brand Cabinet prerequisite notice -->
+      <div class="notice notice--info">
+        <span class="notice__icon">🔍</span>
+        <span class="notice__text">Введите SKU ваших товаров — расширение найдёт все дубликаты из раздела <strong>«Другие продавцы»</strong> / <strong>«Есть дешевле»</strong> на OZON</span>
+      </div>
+
+      <!-- SKU Input -->
+      <div class="card">
+        <h3>Мои артикулы (SKU)</h3>
+        <textarea class="textarea" id="skuInput" rows="4" placeholder="Введите SKU через запятую, пробел или с новой строки&#10;Пример: 3424445844, 1234567890"></textarea>
+        <p class="hint">Можно вставить список из Excel или ввести вручную</p>
+
+        <div class="control-group" style="margin-top:10px">
+          <label class="label">Задержка между SKU</label>
+          <div class="range-control">
+            <input type="range" id="dupDelayRange" min="2" max="15" value="3" step="1">
+            <span id="dupDelayValue" class="range-value">3с</span>
+          </div>
+        </div>
+
+        <div class="btn-group">
+          <button class="btn btn--primary btn--full" id="btnStartDuplicates">🔍 Найти дубликаты</button>
+          <button class="btn btn--danger btn--full" id="btnStopDuplicates" style="display:none">■ Остановить</button>
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div class="card" id="dupProgressCard" style="display:none">
+        <h3>Прогресс</h3>
+        <div class="dup-progress">
+          <div class="dup-progress__bar">
+            <div class="dup-progress__fill" id="dupProgressFill" style="width:0%"></div>
+          </div>
+          <span class="dup-progress__text" id="dupProgressText">0 / 0</span>
+        </div>
+        <div class="stats stats--mini" id="dupStatsCard">
+          <span><strong id="dupStatProcessed">0</strong> обработано</span>
+          <span class="text-danger"><strong id="dupStatFound">0</strong> найдено</span>
+        </div>
+      </div>
+
+      <!-- Quick results -->
+      <div class="card" id="dupQuickResults" style="display:none">
+        <div class="log-header">
+          <h3>Результаты</h3>
+          <span class="log-count" id="dupResultCount">0</span>
+        </div>
+        <div class="btn-group" style="margin-bottom:10px">
+          <button class="btn btn--primary btn--small" id="btnCopyAllSkus">📋 Копировать все SKU</button>
+          <button class="btn btn--secondary btn--small" id="btnQuickExcel">📊 Excel</button>
+          <button class="btn btn--secondary btn--small" id="btnGoReport">→ Отчёт</button>
+        </div>
+        <div id="dupQuickList" class="dup-quick-list"></div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab: ОТЧЁТ ═══════════ -->
+    <section class="tab-content" id="tab-report">
+      <div class="card">
+        <div class="log-header">
+          <h3>Найденные дубликаты</h3>
+          <span class="log-count" id="reportTotalCount">0</span>
+        </div>
+
+        <div class="btn-group" style="margin-bottom:10px">
+          <button class="btn btn--primary btn--small" id="btnReportCopySkus">📋 Копировать SKU</button>
+          <button class="btn btn--secondary btn--small" id="btnReportExcel">📊 Excel</button>
+          <button class="btn btn--secondary btn--small" id="btnReportCSV">📄 CSV</button>
+          <button class="btn btn--danger btn--small" id="btnReportClear">🗑 Очистить</button>
+        </div>
+
+        <div class="log-table-wrap">
+          <table class="log-table" id="reportTable">
+            <thead>
+              <tr>
+                <th>Мой SKU</th>
+                <th>SKU дубликата</th>
+                <th>Название</th>
+                <th>Цена</th>
+                <th>Продавец</th>
+                <th>Ссылка</th>
+              </tr>
+            </thead>
+            <tbody id="reportTableBody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="reportEmpty">Запустите поиск дубликатов на вкладке «Дубликаты»</p>
+      </div>
+
+      <!-- Technical log -->
+      <div class="card">
+        <h3>Техническая</h3>
+        <div id="techLogList" class="tech-log-list"></div>
+        <div class="log-export" id="techLogActions" style="margin-top:8px">
+          <button class="btn btn--small btn--secondary" id="btnCopyTechLog">Копировать</button>
+          <button class="btn btn--small btn--secondary" id="btnSaveTechLog">Сохранить .txt</button>
+          <button class="btn btn--small btn--danger" id="btnClearTechLog">Очистить</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab: НАСТРОЙКИ ═══════════ -->
+    <section class="tab-content" id="tab-settings">
+
+      <!-- Duplicate whitelist -->
+      <div class="card">
+        <h3>Вайтлист дубликатов</h3>
+        <p class="hint">Товары и продавцы из списка будут пропущены при поиске дубликатов</p>
+
+        <div id="dupWhitelistEntries"></div>
+        <div class="add-row">
+          <select id="dupWhitelistType" class="select select--sm" style="width:auto;min-width:90px">
+            <option value="seller">Продавец</option>
+            <option value="sku">SKU</option>
+            <option value="inn">ИНН</option>
+          </select>
+          <input type="text" id="dupWhitelistInput" class="input" placeholder="Значение">
+          <button class="btn btn--secondary" id="btnAddDupWhitelist">+</button>
+        </div>
+      </div>
+
+      <!-- General settings -->
+      <div class="card">
+        <h3>Общие</h3>
+        <label class="toggle">
+          <input type="checkbox" id="notificationsEnabled" checked>
+          <span class="toggle__slider"></span>
+          <span class="toggle__text">Уведомления о результатах</span>
+        </label>
+      </div>
+
+      <!-- Data management -->
+      <div class="card">
+        <h3>Данные</h3>
+        <div class="btn-group">
+          <button class="btn btn--secondary" id="btnExport">Экспорт настроек</button>
+          <button class="btn btn--secondary" id="btnImport">Импорт настроек</button>
+        </div>
+        <input type="file" id="importFile" accept=".json" style="display:none">
+        <div class="btn-group" style="margin-top:8px">
+          <button class="btn btn--danger" id="btnClearLog">Очистить историю</button>
+          <button class="btn btn--danger" id="btnResetAll">Сброс настроек</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Tab: БРЕНДЫ (LEGACY) ═══════════ -->
+    <section class="tab-content" id="tab-legacy">
+
+      <div class="notice notice--deprecated">
+        <span class="notice__icon">⚠️</span>
+        <span class="notice__text"><strong>Устаревший функционал.</strong> OZON ввёл ограничения на частое использование Кабинета бренда. Используйте вкладку «Дубликаты» для поиска подделок через раздел «Другие продавцы».</span>
+      </div>
+
+      <!-- Brand Cabinet notice -->
       <div class="notice notice--brand">
         <span class="notice__icon">🏷️</span>
-        <span class="notice__text">Сначала откройте <strong>Кабинет бренда</strong> на OZON — расширение автоматически откроет нужные страницы и выполнит проверку</span>
+        <span class="notice__text">Сначала откройте <strong>Кабинет бренда</strong> на OZON</span>
       </div>
 
       <!-- Sellers panel -->
@@ -79,7 +233,7 @@
         </div>
       </div>
 
-      <!-- Shared controls -->
+      <!-- Legacy controls -->
       <div class="card">
         <h3>Параметры</h3>
         <div class="control-group">
@@ -88,9 +242,7 @@
             <input type="range" id="delayRange" min="10" max="120" value="15" step="5">
             <span id="delayValue" class="range-value">15с</span>
           </div>
-          <p class="hint">Рекомендуется 10–20 сек</p>
         </div>
-
         <label class="toggle">
           <input type="checkbox" id="dryRun">
           <span class="toggle__slider"></span>
@@ -98,48 +250,7 @@
         </label>
       </div>
 
-      <!-- Schedule -->
-      <div class="card">
-        <h3>Расписание</h3>
-
-        <div class="schedule-row">
-          <label class="toggle">
-            <input type="checkbox" id="scheduleEnabled">
-            <span class="toggle__slider"></span>
-            <span class="toggle__text">Продавцы</span>
-          </label>
-          <select id="scheduleInterval" class="select select--sm">
-            <option value="1">1ч</option>
-            <option value="3">3ч</option>
-            <option value="6" selected>6ч</option>
-            <option value="12">12ч</option>
-            <option value="24">24ч</option>
-          </select>
-        </div>
-
-        <div class="schedule-row">
-          <label class="toggle">
-            <input type="checkbox" id="productScheduleEnabled">
-            <span class="toggle__slider"></span>
-            <span class="toggle__text">Товары</span>
-          </label>
-          <select id="productScheduleInterval" class="select select--sm">
-            <option value="1">1ч</option>
-            <option value="3">3ч</option>
-            <option value="6" selected>6ч</option>
-            <option value="12">12ч</option>
-            <option value="24">24ч</option>
-          </select>
-        </div>
-
-        <p class="hint">Браузер должен быть открыт. Страницы откроются автоматически.</p>
-      </div>
-    </section>
-
-    <!-- ═══════════ Tab: НАСТРОЙКИ ═══════════ -->
-    <section class="tab-content" id="tab-settings">
-
-      <!-- Section: Brands -->
+      <!-- Legacy brands settings -->
       <div class="card">
         <h3>Мои бренды</h3>
         <button class="btn btn--primary btn--full" id="btnScanBrands" style="margin-bottom:10px">
@@ -147,7 +258,6 @@
           Найти бренды на странице
         </button>
         <div id="scannedBrandsList"></div>
-
         <div id="brandsList"></div>
         <button class="btn btn--secondary btn--full" id="btnAddBrand">+ Добавить бренд</button>
       </div>
@@ -176,19 +286,16 @@
         </div>
       </template>
 
-      <!-- Section: Whitelist & Countries -->
+      <!-- Legacy whitelist -->
       <div class="card">
-        <h3>Whitelist</h3>
-        <p class="hint">Продавцы из этого списка не получат жалобы (ни на продавцов, ни на товары)</p>
+        <h3>Whitelist (бренды)</h3>
         <div id="whitelistEntries"></div>
         <div class="add-row">
           <input type="text" id="whitelistInput" class="input" placeholder="Название или ИНН продавца">
           <button class="btn btn--secondary" id="btnAddWhitelist">+</button>
         </div>
-
         <div class="divider"></div>
-
-        <label class="label" style="margin-bottom:6px">Фильтр по странам (для продавцов)</label>
+        <label class="label" style="margin-bottom:6px">Фильтр по странам</label>
         <div class="country-filters">
           <label class="checkbox"><input type="checkbox" value="CN" checked class="country-filter"><span>CN</span></label>
           <label class="checkbox"><input type="checkbox" value="TR" class="country-filter"><span>TR</span></label>
@@ -202,108 +309,82 @@
         </label>
       </div>
 
-      <!-- Section: Product complaints -->
+      <!-- Legacy product complaints -->
       <div class="card">
         <h3>Жалобы на товары</h3>
         <div class="control-group">
           <label class="label">Текст жалобы</label>
-          <textarea class="textarea" id="productComplaintText" rows="2" placeholder="Копия товара моего бренда, нарушение прав на товарный знак"></textarea>
-          <p class="hint">Если пусто — используется текст бренда</p>
+          <textarea class="textarea" id="productComplaintText" rows="2" placeholder="Копия товара моего бренда"></textarea>
         </div>
-
         <div class="control-group">
           <label class="label">Файл для товарных жалоб</label>
           <div class="file-upload">
             <input type="file" id="productFile" accept=".pdf,.jpg,.jpeg,.png">
             <span class="file-name" id="productFileName">Из настроек бренда</span>
-            <button class="btn btn--small" id="btnProductFileSelect">Загрузить отдельно</button>
+            <button class="btn btn--small" id="btnProductFileSelect">Загрузить</button>
           </div>
         </div>
-
         <label class="toggle">
           <input type="checkbox" id="skipProductFile">
           <span class="toggle__slider"></span>
-          <span class="toggle__text">Не прикладывать файл (жалоба на копию карточки)</span>
+          <span class="toggle__text">Не прикладывать файл</span>
         </label>
       </div>
 
-      <!-- Section: General -->
+      <!-- Legacy general -->
       <div class="card">
-        <h3>Общие</h3>
+        <h3>Общие (бренды)</h3>
         <div class="control-group">
           <label class="label">Текст жалобы по умолчанию</label>
-          <textarea class="textarea" id="defaultComplaint" rows="2" placeholder="Продажа подделок на мой бренд">Продажа подделок на мой бренд</textarea>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="notificationsEnabled" checked>
-          <span class="toggle__slider"></span>
-          <span class="toggle__text">Уведомления о результатах</span>
-        </label>
-      </div>
-
-      <!-- Section: Data -->
-      <div class="card">
-        <h3>Данные</h3>
-        <div class="btn-group">
-          <button class="btn btn--secondary" id="btnExport">Экспорт</button>
-          <button class="btn btn--secondary" id="btnImport">Импорт</button>
-        </div>
-        <input type="file" id="importFile" accept=".json" style="display:none">
-        <div class="btn-group" style="margin-top:8px">
-          <button class="btn btn--danger" id="btnClearLog">Очистить историю</button>
-          <button class="btn btn--danger" id="btnResetAll">Сброс настроек</button>
+          <textarea class="textarea" id="defaultComplaint" rows="2">Продажа подделок на мой бренд</textarea>
         </div>
       </div>
-    </section>
 
-    <!-- ═══════════ Tab: ЖАЛОБЫ ═══════════ -->
-    <section class="tab-content" id="tab-log">
+      <!-- Legacy log -->
       <div class="card">
         <div class="log-header">
           <h3>История жалоб</h3>
           <span class="log-count" id="logCount">0 / 5000</span>
         </div>
-
-        <div class="sub-tabs">
-          <button class="sub-tab sub-tab--active" data-subtab="complaints">Результаты</button>
-          <button class="sub-tab" data-subtab="technical">Техническая</button>
+        <div class="log-table-wrap">
+          <table class="log-table" id="logTable">
+            <thead>
+              <tr><th>Дата</th><th>Продавец</th><th>ИНН</th><th>Бренд</th><th>Тип</th><th>Статус</th></tr>
+            </thead>
+            <tbody id="logTableBody"></tbody>
+          </table>
         </div>
-
-        <div class="sub-content sub-content--active" id="subtab-complaints">
-          <div class="log-table-wrap">
-            <table class="log-table" id="logTable">
-              <thead>
-                <tr>
-                  <th>Дата</th>
-                  <th>Продавец</th>
-                  <th>ИНН</th>
-                  <th>Бренд</th>
-                  <th>Тип</th>
-                  <th>Статус</th>
-                </tr>
-              </thead>
-              <tbody id="logTableBody"></tbody>
-            </table>
-          </div>
-          <p class="hint" id="logEmpty">Пока нет записей</p>
-          <div class="log-export" id="logExportBtns" style="display:none">
-            <span class="label">Экспорт:</span>
-            <button class="btn btn--small btn--secondary" id="btnExportCSV">CSV</button>
-            <button class="btn btn--small btn--secondary" id="btnExportExcel">Excel</button>
-            <button class="btn btn--small btn--secondary" id="btnExportTXT">TXT</button>
-          </div>
+        <p class="hint" id="logEmpty">Пока нет записей</p>
+        <div class="log-export" id="logExportBtns" style="display:none">
+          <span class="label">Экспорт:</span>
+          <button class="btn btn--small btn--secondary" id="btnExportCSV">CSV</button>
+          <button class="btn btn--small btn--secondary" id="btnExportExcel">Excel</button>
+          <button class="btn btn--small btn--secondary" id="btnExportTXT">TXT</button>
         </div>
+      </div>
 
-        <div class="sub-content" id="subtab-technical">
-          <div class="tech-log" id="techLogEntries">
-            <p class="hint">Логи сессии из плавающей панели на OZON:</p>
-          </div>
-          <div id="techLogList" class="tech-log-list"></div>
-          <div class="log-export" id="techLogActions" style="margin-top:8px">
-            <button class="btn btn--small btn--secondary" id="btnCopyTechLog">Копировать</button>
-            <button class="btn btn--small btn--secondary" id="btnSaveTechLog">Сохранить .txt</button>
-            <button class="btn btn--small btn--danger" id="btnClearTechLog">Очистить</button>
-          </div>
+      <!-- Schedule -->
+      <div class="card">
+        <h3>Расписание (бренды)</h3>
+        <div class="schedule-row">
+          <label class="toggle">
+            <input type="checkbox" id="scheduleEnabled">
+            <span class="toggle__slider"></span>
+            <span class="toggle__text">Продавцы</span>
+          </label>
+          <select id="scheduleInterval" class="select select--sm">
+            <option value="1">1ч</option><option value="3">3ч</option><option value="6" selected>6ч</option><option value="12">12ч</option><option value="24">24ч</option>
+          </select>
+        </div>
+        <div class="schedule-row">
+          <label class="toggle">
+            <input type="checkbox" id="productScheduleEnabled">
+            <span class="toggle__slider"></span>
+            <span class="toggle__text">Товары</span>
+          </label>
+          <select id="productScheduleInterval" class="select select--sm">
+            <option value="1">1ч</option><option value="3">3ч</option><option value="6" selected>6ч</option><option value="12">12ч</option><option value="24">24ч</option>
+          </select>
         </div>
       </div>
     </section>
@@ -311,48 +392,40 @@
     <!-- ═══════════ Tab: ИНФО ═══════════ -->
     <section class="tab-content" id="tab-guide">
       <div class="card">
-        <h3>Быстрый старт</h3>
+        <h3>Поиск дубликатов — Быстрый старт</h3>
         <div class="guide-content">
-          <div class="guide-step guide-step--required">
-            <div class="guide-step__num guide-step__num--zero">!</div>
-            <div class="guide-step__body">
-              <strong>Откройте Кабинет бренда на OZON</strong>
-              <p>Перейдите на <a href="https://seller.ozon.ru/" target="_blank">seller.ozon.ru</a>, нажмите на «Продавец» в шапке → выберите <strong>Кабинет бренда</strong>. После этого расширение само откроет нужные страницы, переключит режим и выполнит проверку.</p>
-            </div>
-          </div>
           <div class="guide-step">
             <div class="guide-step__num">1</div>
             <div class="guide-step__body">
-              <strong>Настройки → Мои бренды</strong>
-              <p>Нажмите «Найти бренды» или добавьте вручную. Для каждого бренда задайте текст жалобы и прикрепите документ ТЗ.</p>
+              <strong>Введите SKU ваших товаров</strong>
+              <p>На вкладке «Дубликаты» введите артикулы ваших товаров — через запятую, пробел или с новой строки. Можно вставить список из Excel.</p>
             </div>
           </div>
           <div class="guide-step">
             <div class="guide-step__num">2</div>
             <div class="guide-step__body">
-              <strong>Настройки → Whitelist</strong>
-              <p>Добавьте себя и партнёров. Они не получат жалоб ни как продавцы, ни как владельцы товаров.</p>
+              <strong>Нажмите «Найти дубликаты»</strong>
+              <p>Расширение автоматически откроет каждую страницу товара на OZON и соберёт все дубликаты из секции <strong>«Другие продавцы»</strong> / <strong>«Есть дешевле»</strong>.</p>
             </div>
           </div>
           <div class="guide-step">
             <div class="guide-step__num">3</div>
             <div class="guide-step__body">
-              <strong>Главная → Проверка Брендов / Товаров</strong>
-              <p>Выберите режим и нажмите кнопку. Расширение само откроет страницу в <strong>Кабинете бренда</strong> и начнёт сканирование. Прогресс виден на плавающей панели прямо на странице OZON.</p>
+              <strong>Скопируйте SKU или скачайте отчёт</strong>
+              <p><strong>Копировать SKU</strong> — все артикулы дубликатов одним списком для отправки в поддержку OZON.<br><strong>Excel</strong> — полный отчёт с ценами, ссылками и продавцами.</p>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Настройки → Вайтлист</h3>
+        <div class="guide-content">
           <div class="guide-step">
-            <div class="guide-step__num">4</div>
+            <div class="guide-step__num">!</div>
             <div class="guide-step__body">
-              <strong>Главная → Товары</strong>
-              <p>Аналогично для товаров. Жалобы подаются на товары чужих продавцов (не в Whitelist).</p>
-            </div>
-          </div>
-          <div class="guide-step">
-            <div class="guide-step__num">5</div>
-            <div class="guide-step__body">
-              <strong>Расписание</strong>
-              <p>Включите автозапуск для продавцов и/или товаров. Расширение само откроет страницу и начнёт работу.</p>
+              <strong>Добавьте партнёров в вайтлист</strong>
+              <p>Укажите SKU товаров партнёров, названия магазинов или ИНН компаний — они будут пропущены при поиске дубликатов.</p>
             </div>
           </div>
         </div>
@@ -361,11 +434,10 @@
       <div class="card">
         <h3>Советы</h3>
         <ul class="guide-tips">
-          <li><strong>Обязательно:</strong> перед первым запуском зайдите в <strong>Кабинет бренда</strong> на OZON (шапка → «Продавец» → Кабинет бренда)</li>
-          <li>Начните с <strong>тестового режима</strong> (Dry Run) — убедитесь что нарушители определяются верно</li>
-          <li>Если жалоба на <strong>копию карточки</strong> (без ТЗ) — включите «Не прикладывать файл» в настройках товаров</li>
-          <li>Файл для товарных жалоб берётся <strong>из бренда</strong>, если не загружен отдельно</li>
-          <li>Для работы расписания <strong>браузер должен быть открыт</strong></li>
+          <li><strong>Не закрывайте вкладку</strong> — расширение работает в открытом браузере, переключаясь между страницами товаров</li>
+          <li>Чем больше SKU, тем дольше сканирование — <strong>задержка 3-5с</strong> между страницами рекомендуется</li>
+          <li>Результаты сохраняются — при повторном открытии расширения последний отчёт доступен на вкладке «Отчёт»</li>
+          <li><strong>Вкладка «Бренды»</strong> — устаревший функционал проверки через Кабинет бренда, работает как раньше</li>
         </ul>
       </div>
 
@@ -377,7 +449,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>OZON Brand Guard v2.1.3</span>
+      <span>OZON Brand Guard v3.0.0</span>
       <a href="https://t.me/firayzer" target="_blank">by firayzer</a>
     </footer>
   </div>

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OZON Brand Guard",
-  "version": "2.1.3",
-  "description": "Автоматическая защита брендов от подделок на OZON — подача жалоб на нарушителей",
+  "version": "3.0.0",
+  "description": "Поиск дубликатов и защита брендов на OZON — обнаружение подделок в разделе Другие продавцы",
   "default_locale": "ru",
 
   "permissions": [
@@ -15,7 +15,8 @@
   ],
 
   "host_permissions": [
-    "https://seller.ozon.ru/*"
+    "https://seller.ozon.ru/*",
+    "https://www.ozon.ru/*"
   ],
 
   "background": {

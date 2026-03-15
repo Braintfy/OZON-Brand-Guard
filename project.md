@@ -1,15 +1,15 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-13 | Версия: 2.1.3
+> Последнее обновление: 2026-03-15 | Версия: 3.0.0
 
 ## Архитектура
 
 ```
 Chrome Extension (Manifest V3)
-├── popup/          — UI расширения (4 вкладки: Главная, Настройки, Жалобы, Инфо)
-├── content/        — Content script (работает на странице OZON)
-├── background/     — Service Worker (планировщик, логи, relay сообщений)
+├── popup/          — UI расширения (5 вкладок: Дубликаты, Отчёт, Настройки, Бренды, Инфо)
+├── content/        — Content scripts (3 скрипта: duplicates, sellers, products)
+├── background/     — Service Worker (планировщик, логи, relay, навигация дубликатов)
 ├── options/        — Страница расширенных настроек (статичная)
 ├── assets/         — Иконки (SVG щит + PNG 16/48/128)
 └── _locales/       — Локализация (ru, en)
@@ -18,22 +18,50 @@ Chrome Extension (Manifest V3)
 ## Файлы и их роли
 
 ### manifest.json
-- **Manifest V3**, version `1.4.0`
+- **Manifest V3**, version `3.0.0`
 - Permissions: `storage`, `alarms`, `notifications`, `activeTab`, `scripting`, `tabs`
-- Host: `https://seller.ozon.ru/*`
-- Content script инжектится ТОЛЬКО на: `https://seller.ozon.ru/app/brand/sellers*`
+- Host: `https://seller.ozon.ru/*`, `https://www.ozon.ru/*`
+- Content scripts инжектятся программно через `chrome.scripting.executeScript`
 - Popup: `popup/popup.html`
 - Background: `background/service-worker.js`
 
-### background/service-worker.js (158 строк)
+### background/service-worker.js (~460 строк)
 - **Message hub** — принимает сообщения от content и popup, relay между ними
 - **Actions**: `getStatus`, `setRunning`, `updateSchedule`, `logComplaint`, `showNotification`, `getConfig`
-- **Relay actions**: `scanBrandsResult`, `updateStats`, `done`, `logUpdate`, `techLog`
-- **Scheduling**: `chrome.alarms` для автозапуска (1/3/6/12/24ч)
+- **NEW Actions**: `launchDuplicates`, `stopDuplicates`, `duplicatePageResult`, `duplicateScanStopped`, `updateDuplicateStats`
+- **Relay actions**: `scanBrandsResult`, `updateStats`, `done`, `logUpdate`, `techLog`, `doneDuplicates`, `duplicatePageDone`
+- **Duplicate search**: `launchDuplicateSearch()`, `processDuplicateSku()`, `handleDuplicatePageResult()`, `stopDuplicateSearch()`
+- **duplicateScanState**: `{ skus, currentIndex, results, config, tabId }` — состояние последовательного обхода SKU
+- **Scheduling**: `chrome.alarms` для автозапуска (legacy, 1/3/6/12/24ч)
 - **Logging**: `addLogEntry()` — сохраняет в `chrome.storage.local`, лимит **5000** записей
-- **Alarm handler**: находит/создаёт вкладку sellers и отправляет `start`
 
-### content/content.js (1713 строк) — ГЛАВНЫЙ ФАЙЛ
+### content/content-duplicates.js (~380 строк) — МОДУЛЬ ДУБЛИКАТОВ (NEW)
+Работает на `www.ozon.ru/product/*`. IIFE с guard `__obg-duplicates-guard`.
+
+#### Основные функции
+| Функция | Описание |
+|---------|----------|
+| `startScan(skus, startIndex)` | Точка входа: ожидание загрузки → сбор конкурентов → отправка результатов |
+| `waitForPageLoad()` | Ожидание рендера SPA (20 попыток, ищет `data-widget` элементы) |
+| `collectCompetitors(mySku)` | 4 стратегии сбора: секции по ключевым словам, кнопка «Показать все», все ссылки, виджеты OZON |
+| `findCompetitorSections()` | Поиск секций по `data-widget`, заголовкам, TreeWalker текстовых узлов |
+| `parseProductCards(container)` | Парсинг карточек товаров внутри секции → SKU, название, цена, продавец, URL |
+| `parseAllProductLinks()` | Широкий поиск — все `a[href*="/product/"]` кроме nav/header/footer |
+| `parseOzonWidgets()` | Поиск виджетов с `data-widget` содержащим Similar/Offer/Seller/Cheaper |
+| `extractSkuFromUrl(url)` | Regex: `/product/.*?(\d{5,})/` → SKU |
+| `extractCardData(container, sku, href)` | Извлечение: name, price, seller, image, rating, reviews |
+| `applyWhitelist(competitors)` | Фильтрация по `duplicateWhitelist` (sku/seller/inn) |
+| `showPanel()` | Drag-панель на странице OZON (синяя тема, логи, свернуть/закрыть) |
+
+#### Поток работы:
+1. Background открывает `www.ozon.ru/product/{SKU}/`
+2. Инжектит content-duplicates.js
+3. Отправляет `startDuplicateScan` с массивом SKU и текущим индексом
+4. Content script парсит страницу, собирает конкурентов
+5. Отправляет `duplicatePageResult` с результатами
+6. Background переходит к следующему SKU
+
+### content/content.js (1713 строк) — LEGACY: МОДУЛЬ ПРОДАВЦОВ
 Работает на `seller.ozon.ru/app/brand/sellers*`. IIFE с guard `__obgContentLoaded`.
 
 #### Состояние
@@ -83,18 +111,17 @@ Chrome Extension (Manifest V3)
 - `.obg-whitelisted-row` — зелёная подсветка разрешённого
 - `.obg-badge--violator`, `.obg-badge--safe` — бейджи
 
-### popup/popup.html (367 строк)
-6 вкладок: Главная | Бренды | Whitelist | Настройки | Жалобы | Инфо
-- **Главная**: режим, задержка (10-300с, default 20), start/stop, stats, расписание
-- **Бренды**: автопоиск + список с template (name, complaint, file)
-- **Whitelist**: список + input + фильтр по странам (CN/TR/KR/IN)
-- **Настройки**: default complaint, dry run, notifications, export/import, clear/reset
-- **Жалобы**: sub-tabs (Результаты: table + export CSV/Excel/TXT | Техническая: dark console)
-- **Инфо**: 5 шагов + совместимость
-- Footer: `v1.4.0 by firayzer`
+### popup/popup.html (~460 строк)
+5 вкладок: Дубликаты | Отчёт | Настройки | Бренды (legacy) | Инфо
+- **Дубликаты**: ввод SKU (textarea), задержка (2-15с), кнопка «Найти дубликаты», прогресс-бар, быстрые результаты с копированием SKU и Excel
+- **Отчёт**: полная таблица дубликатов (Мой SKU, SKU дубликата, Название, Цена, Продавец, Ссылка) + export Excel/CSV + техлог
+- **Настройки**: вайтлист дубликатов (SKU/продавец/ИНН), общие, экспорт/импорт данных
+- **Бренды (legacy)**: deprecated notice + полный старый функционал (продавцы, товары, жалобы, бренды, whitelist, расписание)
+- **Инфо**: 3 шага поиска дубликатов + советы + совместимость
+- Footer: `v3.0.0 by firayzer`
 
-### popup/popup.js (696 строк)
-- `DEFAULT_CONFIG`: brands[], whitelist[{value,type}], bannedCountries['CN'], delaySeconds:20
+### popup/popup.js (~880 строк)
+- `DEFAULT_CONFIG`: brands[], whitelist[], duplicateWhitelist[], duplicateDelay:3, lastDuplicateResults[], savedSkuInput
 - `MAX_LOG_ENTRIES = 5000`
 - `renderBrands()` — red highlight `brand-item--no-file` если нет fileData
 - `renderLog()` — table с tbody, count X/5000
@@ -152,17 +179,26 @@ Chrome Extension (Manifest V3)
 
 ```js
 {
+  // NEW: Duplicate search
+  duplicateWhitelist: [{ value, type: 'sku'|'seller'|'inn' }],
+  duplicateDelay: 3,                  // задержка между SKU (секунды)
+  lastDuplicateResults: [{            // сохранённые результаты
+    sku, name, price, seller, url, image, rating, reviews, sourceSku
+  }],
+  savedSkuInput: '',                  // сохранённый текст из textarea SKU
+
+  // Legacy: Brand protection
   brands: [{ id, name, complaint, fileData (base64), fileName }],
   whitelist: [{ value, type: 'name'|'inn' }],
   bannedCountries: ['CN'],
   useCountryFilter: true,
   defaultComplaint: 'Продажа подделок на мой бренд',
-  productComplaintText: '',           // отдельный текст для жалоб на товары
-  productFileData: null,              // base64 файла для товарных жалоб
+  productComplaintText: '',
+  productFileData: null,
   productFileName: '',
-  skipProductFile: false,             // не прикладывать файл (жалоба на копию карточки)
+  skipProductFile: false,
   delaySeconds: 15,
-  productMode: 'scan',               // отдельный режим для товаров
+  productMode: 'scan',
   mode: 'scan' | 'complain',
   dryRun: false,
   scheduleEnabled: false,

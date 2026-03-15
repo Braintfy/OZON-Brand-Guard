@@ -1,4 +1,4 @@
-// OZON Brand Guard — Popup Script v2.0.0
+// OZON Brand Guard — Popup Script v3.0.0
 // Автор: firayzer (https://t.me/firayzer)
 
 (function () {
@@ -23,18 +23,25 @@
     productScheduleEnabled: false,
     productScheduleInterval: 6,
     notificationsEnabled: true,
-    log: []
+    log: [],
+    // New: duplicate search
+    duplicateWhitelist: [],
+    duplicateDelay: 3,
+    lastDuplicateResults: [],
+    savedSkuInput: ''
   };
 
   const MAX_LOG_ENTRIES = 5000;
   let config = {};
   let accumulatedBrands = {};
   let techLogLines = [];
+  let duplicateResults = []; // In-memory results for current session
 
   // ── Init ──
   async function init() {
     config = await loadConfig();
     techLogLines = await loadTechLogs();
+    duplicateResults = config.lastDuplicateResults || [];
     trimLog();
     renderAll();
     bindEvents();
@@ -52,7 +59,7 @@
     });
   }
 
-  // ── Navigation ──
+  // ── Navigation (legacy) ──
   async function ensureOzonPage(targetUrl, urlCheck) {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (activeTab && activeTab.url && activeTab.url.includes(urlCheck)) return activeTab;
@@ -88,7 +95,7 @@
     });
   }
 
-  // ── Script injection ──
+  // ── Script injection (legacy) ──
   async function ensureContentScript(tabId) {
     try {
       await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] });
@@ -132,15 +139,129 @@
 
   // ── Rendering ──
   function renderAll() {
+    renderDuplicateSettings();
+    renderDupWhitelist();
+    renderDuplicateReport();
+    renderDuplicateQuickResults();
     renderBrands();
     renderWhitelist();
     renderCountryFilters();
-    renderSettings();
+    renderLegacySettings();
     renderLog();
   }
 
-  function renderSettings() {
-    const q = (s) => document.querySelector(s);
+  // ── NEW: Duplicate search rendering ──
+  function renderDuplicateSettings() {
+    const id = (s) => document.getElementById(s);
+    id('skuInput').value = config.savedSkuInput || '';
+    id('dupDelayRange').value = config.duplicateDelay || 3;
+    id('dupDelayValue').textContent = (config.duplicateDelay || 3) + 'с';
+    id('notificationsEnabled').checked = config.notificationsEnabled;
+  }
+
+  function renderDupWhitelist() {
+    const container = document.getElementById('dupWhitelistEntries');
+    if (!container) return;
+    container.innerHTML = '';
+    const wl = config.duplicateWhitelist || [];
+    wl.forEach((entry, index) => {
+      const typeLabel = { sku: 'SKU', seller: 'Продавец', inn: 'ИНН' }[entry.type] || entry.type;
+      const div = document.createElement('div');
+      div.className = 'whitelist-entry';
+      div.innerHTML = `<span>${esc(entry.value)} <small style="color:#999">(${typeLabel})</small></span>
+        <button class="btn-icon btn-icon--delete" data-index="${index}" title="Удалить">×</button>`;
+      container.appendChild(div);
+    });
+    container.querySelectorAll('.btn-icon--delete').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        config.duplicateWhitelist.splice(parseInt(btn.dataset.index, 10), 1);
+        await saveConfig(); renderDupWhitelist();
+      });
+    });
+  }
+
+  function renderDuplicateQuickResults() {
+    const card = document.getElementById('dupQuickResults');
+    const list = document.getElementById('dupQuickList');
+    const countEl = document.getElementById('dupResultCount');
+    if (!card || !list) return;
+
+    if (duplicateResults.length === 0) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = 'block';
+    countEl.textContent = duplicateResults.length;
+
+    // Group by source SKU
+    const grouped = {};
+    duplicateResults.forEach(r => {
+      if (!grouped[r.sourceSku]) grouped[r.sourceSku] = [];
+      grouped[r.sourceSku].push(r);
+    });
+
+    list.innerHTML = '';
+    for (const [sku, items] of Object.entries(grouped)) {
+      const group = document.createElement('div');
+      group.className = 'dup-group';
+      group.innerHTML = `<div class="dup-group__header">
+        <strong>SKU ${esc(sku)}</strong>
+        <span class="dup-group__count">${items.length} дубликатов</span>
+      </div>`;
+      const itemsDiv = document.createElement('div');
+      itemsDiv.className = 'dup-group__items';
+      items.slice(0, 5).forEach(item => {
+        const d = document.createElement('div');
+        d.className = 'dup-item';
+        d.innerHTML = `<span class="dup-item__sku">${esc(item.sku)}</span>
+          <span class="dup-item__price">${item.price ? item.price + ' ₽' : '—'}</span>
+          <a href="${esc(item.url)}" target="_blank" class="dup-item__link" title="${esc(item.name)}">→</a>`;
+        itemsDiv.appendChild(d);
+      });
+      if (items.length > 5) {
+        const more = document.createElement('div');
+        more.className = 'dup-item dup-item--more';
+        more.textContent = `+ ещё ${items.length - 5}...`;
+        itemsDiv.appendChild(more);
+      }
+      group.appendChild(itemsDiv);
+      list.appendChild(group);
+    }
+  }
+
+  function renderDuplicateReport() {
+    const tbody = document.getElementById('reportTableBody');
+    const emptyMsg = document.getElementById('reportEmpty');
+    const countEl = document.getElementById('reportTotalCount');
+    const table = document.getElementById('reportTable');
+    if (!tbody) return;
+
+    countEl.textContent = duplicateResults.length;
+    if (duplicateResults.length === 0) {
+      tbody.innerHTML = '';
+      emptyMsg.style.display = 'block';
+      table.style.display = 'none';
+      return;
+    }
+
+    emptyMsg.style.display = 'none';
+    table.style.display = 'table';
+    tbody.innerHTML = '';
+
+    duplicateResults.forEach(item => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${esc(item.sourceSku || '')}</td>
+        <td><strong>${esc(item.sku || '')}</strong></td>
+        <td title="${esc(item.name || '')}">${esc((item.name || '').substring(0, 40))}${(item.name || '').length > 40 ? '...' : ''}</td>
+        <td>${item.price ? esc(item.price) + ' ₽' : '—'}</td>
+        <td>${esc(item.seller || '—')}</td>
+        <td><a href="${esc(item.url || '')}" target="_blank" style="color:#005bff">Открыть</a></td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ── Legacy rendering ──
+  function renderLegacySettings() {
     const id = (s) => document.getElementById(s);
 
     // Mode switches (button-based)
@@ -156,7 +277,6 @@
     id('delayValue').textContent = config.delaySeconds + 'с';
     id('dryRun').checked = config.dryRun;
     id('defaultComplaint').value = config.defaultComplaint;
-    id('notificationsEnabled').checked = config.notificationsEnabled;
 
     id('scheduleEnabled').checked = config.scheduleEnabled;
     id('scheduleInterval').value = config.scheduleInterval;
@@ -344,26 +464,102 @@
         document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('tab-content--active'));
         tab.classList.add('tab--active');
         document.getElementById('tab-' + tab.dataset.tab).classList.add('tab-content--active');
+        if (tab.dataset.tab === 'report') { renderDuplicateReport(); renderTechLog(); }
       });
     });
 
-    // Sub-tabs
-    document.querySelectorAll('.sub-tab').forEach((tab) => {
-      tab.addEventListener('click', () => {
-        document.querySelectorAll('.sub-tab').forEach((t) => t.classList.remove('sub-tab--active'));
-        document.querySelectorAll('.sub-content').forEach((c) => c.classList.remove('sub-content--active'));
-        tab.classList.add('sub-tab--active');
-        document.getElementById('subtab-' + tab.dataset.subtab).classList.add('sub-content--active');
-        if (tab.dataset.subtab === 'technical') renderTechLog();
-      });
+    // ═══════════ NEW: Duplicate search events ═══════════
+    document.getElementById('dupDelayRange').addEventListener('input', (e) => document.getElementById('dupDelayValue').textContent = e.target.value + 'с');
+    document.getElementById('dupDelayRange').addEventListener('change', async (e) => { config.duplicateDelay = parseInt(e.target.value, 10); await saveConfig(); });
+    document.getElementById('skuInput').addEventListener('change', async (e) => { config.savedSkuInput = e.target.value; await saveConfig(); });
+
+    // Start duplicate search
+    document.getElementById('btnStartDuplicates').addEventListener('click', async () => {
+      const raw = document.getElementById('skuInput').value;
+      const skus = raw.split(/[\s,;\n]+/).map(s => s.trim()).filter(s => /^\d{5,}$/.test(s));
+      if (skus.length === 0) { alert('Введите хотя бы один SKU (числовой артикул OZON)'); return; }
+
+      config.savedSkuInput = raw;
+      await saveConfig();
+
+      techLogLines = []; saveTechLogs();
+      duplicateResults = [];
+      renderDuplicateQuickResults();
+
+      document.getElementById('btnStartDuplicates').style.display = 'none';
+      document.getElementById('btnStopDuplicates').style.display = 'flex';
+      document.getElementById('dupProgressCard').style.display = 'block';
+      setRunningState(true);
+
+      safeSendRuntime({ action: 'launchDuplicates', skus, config: { duplicateWhitelist: config.duplicateWhitelist, duplicateDelay: config.duplicateDelay } });
     });
 
-    // ── Главная: Mode switches ──
+    // Stop duplicate search
+    document.getElementById('btnStopDuplicates').addEventListener('click', () => {
+      safeSendRuntime({ action: 'stopDuplicates' });
+      document.getElementById('btnStartDuplicates').style.display = 'flex';
+      document.getElementById('btnStopDuplicates').style.display = 'none';
+      setRunningState(false);
+    });
+
+    // Copy all SKUs
+    const copySkuHandler = () => {
+      const skuList = duplicateResults.map(r => r.sku).filter(Boolean);
+      const unique = [...new Set(skuList)];
+      navigator.clipboard.writeText(unique.join('\n')).then(() => {
+        const btn = document.getElementById('btnCopyAllSkus');
+        const origText = btn.textContent;
+        btn.textContent = 'Скопировано!';
+        setTimeout(() => btn.textContent = origText, 2000);
+      });
+    };
+    document.getElementById('btnCopyAllSkus').addEventListener('click', copySkuHandler);
+    document.getElementById('btnReportCopySkus').addEventListener('click', copySkuHandler);
+
+    // Quick Excel export
+    const excelHandler = () => exportDuplicatesExcel();
+    document.getElementById('btnQuickExcel').addEventListener('click', excelHandler);
+    document.getElementById('btnReportExcel').addEventListener('click', excelHandler);
+
+    // Report CSV
+    document.getElementById('btnReportCSV').addEventListener('click', () => exportDuplicatesCSV());
+
+    // Go to report tab
+    document.getElementById('btnGoReport').addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab--active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('tab-content--active'));
+      document.querySelector('.tab[data-tab="report"]').classList.add('tab--active');
+      document.getElementById('tab-report').classList.add('tab-content--active');
+      renderDuplicateReport(); renderTechLog();
+    });
+
+    // Clear report
+    document.getElementById('btnReportClear').addEventListener('click', async () => {
+      if (!confirm('Очистить отчёт дубликатов?')) return;
+      duplicateResults = [];
+      config.lastDuplicateResults = [];
+      await saveConfig();
+      renderDuplicateReport();
+      renderDuplicateQuickResults();
+    });
+
+    // Duplicate whitelist
+    document.getElementById('btnAddDupWhitelist').addEventListener('click', async () => {
+      const input = document.getElementById('dupWhitelistInput');
+      const val = input.value.trim(); if (!val) return;
+      const type = document.getElementById('dupWhitelistType').value;
+      if (!config.duplicateWhitelist) config.duplicateWhitelist = [];
+      config.duplicateWhitelist.push({ value: val, type });
+      input.value = ''; await saveConfig(); renderDupWhitelist();
+    });
+    document.getElementById('dupWhitelistInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('btnAddDupWhitelist').click(); });
+
+    // ═══════════ LEGACY: Brand protection events ═══════════
     document.querySelectorAll('.mode-switch').forEach((sw) => {
       sw.querySelectorAll('.mode-switch__btn').forEach((btn) => {
         btn.addEventListener('click', async () => {
-          const name = sw.dataset.name; // 'mode' or 'productMode'
-          const value = btn.dataset.value; // 'scan' or 'complain'
+          const name = sw.dataset.name;
+          const value = btn.dataset.value;
           config[name] = value;
           await saveConfig();
           sw.querySelectorAll('.mode-switch__btn').forEach((b) => b.classList.remove('mode-switch__btn--active'));
@@ -376,10 +572,8 @@
     document.getElementById('delayRange').addEventListener('change', async (e) => { config.delaySeconds = parseInt(e.target.value, 10); await saveConfig(); });
     document.getElementById('dryRun').addEventListener('change', async (e) => { config.dryRun = e.target.checked; await saveConfig(); });
 
-    // Start sellers — delegate to background (popup may close during navigation)
     document.getElementById('btnStart').addEventListener('click', async () => {
       techLogLines = []; saveTechLogs();
-      // Read mode from active button
       const activeBtn = document.querySelector('.mode-switch[data-name="mode"] .mode-switch__btn--active');
       if (activeBtn) config.mode = activeBtn.dataset.value;
       if (config.mode !== 'complain') config.mode = 'scan';
@@ -389,17 +583,14 @@
     });
 
     document.getElementById('btnStop').addEventListener('click', async () => {
-      // Send stop to all matching tabs
       const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
       for (const t of tabs) safeSendToTab(t.id, { action: 'stop' });
       safeSendRuntime({ action: 'setRunning', running: false });
       setRunningState(false);
     });
 
-    // Start products — delegate to background
     document.getElementById('btnStartProducts').addEventListener('click', async () => {
       techLogLines = []; saveTechLogs();
-      // Read productMode from active button
       const activeBtn = document.querySelector('.mode-switch--orange .mode-switch__btn--active');
       if (activeBtn) config.productMode = activeBtn.dataset.value;
       if (config.productMode !== 'complain') config.productMode = 'scan';
@@ -417,27 +608,11 @@
       document.getElementById('btnStopProducts').style.display = 'none';
     });
 
-    // Schedule — sellers
-    document.getElementById('scheduleEnabled').addEventListener('change', async (e) => {
-      config.scheduleEnabled = e.target.checked; await saveConfig();
-      safeSendRuntime({ action: 'updateSchedule', config });
-    });
-    document.getElementById('scheduleInterval').addEventListener('change', async (e) => {
-      config.scheduleInterval = parseInt(e.target.value, 10); await saveConfig();
-      safeSendRuntime({ action: 'updateSchedule', config });
-    });
+    document.getElementById('scheduleEnabled').addEventListener('change', async (e) => { config.scheduleEnabled = e.target.checked; await saveConfig(); safeSendRuntime({ action: 'updateSchedule', config }); });
+    document.getElementById('scheduleInterval').addEventListener('change', async (e) => { config.scheduleInterval = parseInt(e.target.value, 10); await saveConfig(); safeSendRuntime({ action: 'updateSchedule', config }); });
+    document.getElementById('productScheduleEnabled').addEventListener('change', async (e) => { config.productScheduleEnabled = e.target.checked; await saveConfig(); safeSendRuntime({ action: 'updateProductSchedule', config }); });
+    document.getElementById('productScheduleInterval').addEventListener('change', async (e) => { config.productScheduleInterval = parseInt(e.target.value, 10); await saveConfig(); safeSendRuntime({ action: 'updateProductSchedule', config }); });
 
-    // Schedule — products
-    document.getElementById('productScheduleEnabled').addEventListener('change', async (e) => {
-      config.productScheduleEnabled = e.target.checked; await saveConfig();
-      safeSendRuntime({ action: 'updateProductSchedule', config });
-    });
-    document.getElementById('productScheduleInterval').addEventListener('change', async (e) => {
-      config.productScheduleInterval = parseInt(e.target.value, 10); await saveConfig();
-      safeSendRuntime({ action: 'updateProductSchedule', config });
-    });
-
-    // ── Настройки: Brands ──
     document.getElementById('btnScanBrands').addEventListener('click', async () => {
       const scanBtn = document.getElementById('btnScanBrands');
       scanBtn.disabled = true; scanBtn.textContent = 'Открываю...';
@@ -457,7 +632,6 @@
       await saveConfig(); renderBrands();
     });
 
-    // Whitelist
     document.getElementById('btnAddWhitelist').addEventListener('click', async () => {
       const input = document.getElementById('whitelistInput');
       const val = input.value.trim(); if (!val) return;
@@ -472,7 +646,6 @@
     }));
     document.getElementById('useCountryFilter').addEventListener('change', async (e) => { config.useCountryFilter = e.target.checked; await saveConfig(); });
 
-    // Product settings
     document.getElementById('productComplaintText').addEventListener('change', async (e) => { config.productComplaintText = e.target.value.trim(); await saveConfig(); });
     document.getElementById('btnProductFileSelect').addEventListener('click', () => document.getElementById('productFile').click());
     document.getElementById('productFile').addEventListener('change', async (e) => {
@@ -487,11 +660,10 @@
     });
     document.getElementById('skipProductFile').addEventListener('change', async (e) => { config.skipProductFile = e.target.checked; await saveConfig(); });
 
-    // General settings
     document.getElementById('defaultComplaint').addEventListener('change', async (e) => { config.defaultComplaint = e.target.value.trim(); await saveConfig(); });
     document.getElementById('notificationsEnabled').addEventListener('change', async (e) => { config.notificationsEnabled = e.target.checked; await saveConfig(); });
 
-    // Data management
+    // ═══════════ SHARED: Data management ═══════════
     document.getElementById('btnExport').addEventListener('click', () => downloadFile(JSON.stringify(config, null, 2), 'brand-guard-settings.json', 'application/json'));
     document.getElementById('btnImport').addEventListener('click', () => document.getElementById('importFile').click());
     document.getElementById('importFile').addEventListener('change', async (e) => {
@@ -515,14 +687,29 @@
       });
     });
     document.getElementById('btnSaveTechLog').addEventListener('click', () => {
-      const text = techLogLines.join('\n');
-      downloadFile(text, 'brand-guard-techlog-' + Date.now() + '.txt', 'text/plain;charset=utf-8');
+      downloadFile(techLogLines.join('\n'), 'brand-guard-techlog-' + Date.now() + '.txt', 'text/plain;charset=utf-8');
     });
-    document.getElementById('btnClearTechLog').addEventListener('click', () => {
-      techLogLines = [];
-      saveTechLogs();
-      renderTechLog();
+    document.getElementById('btnClearTechLog').addEventListener('click', () => { techLogLines = []; saveTechLogs(); renderTechLog(); });
+  }
+
+  // ── NEW: Duplicate export functions ──
+  function exportDuplicatesExcel() {
+    if (duplicateResults.length === 0) return;
+    let h = '<html><head><meta charset="UTF-8"></head><body><table border="1" style="border-collapse:collapse;font-family:Arial;font-size:12px">';
+    h += '<tr style="background:#005bff;color:#fff;font-weight:bold"><th>Мой SKU</th><th>SKU дубликата</th><th>Название</th><th>Цена</th><th>Продавец</th><th>Ссылка</th></tr>';
+    duplicateResults.forEach(r => {
+      h += `<tr><td>${esc(r.sourceSku || '')}</td><td>${esc(r.sku || '')}</td><td>${esc(r.name || '')}</td><td>${r.price || ''}</td><td>${esc(r.seller || '')}</td><td><a href="${esc(r.url || '')}">${esc(r.url || '')}</a></td></tr>`;
     });
+    const ts = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
+    downloadFile(h + '</table></body></html>', `duplicates_${ts}.xls`, 'application/vnd.ms-excel;charset=utf-8');
+  }
+
+  function exportDuplicatesCSV() {
+    if (duplicateResults.length === 0) return;
+    const csv = '\uFEFF' + 'Мой SKU;SKU дубликата;Название;Цена;Продавец;Ссылка\n' +
+      duplicateResults.map(r => `${r.sourceSku || ''};${r.sku || ''};${(r.name || '').replace(/;/g, ',')};${r.price || ''};${(r.seller || '').replace(/;/g, ',')};${r.url || ''}`).join('\n');
+    const ts = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
+    downloadFile(csv, `duplicates_${ts}.csv`, 'text/csv;charset=utf-8');
   }
 
   // ── State ──
@@ -538,7 +725,12 @@
     safeSendRuntime({ action: 'getStatus' }, (r) => {
       if (!r) return;
       if (r.running) setRunningState(true);
-      // Restore stats from background (survives popup close/reopen)
+      // Restore duplicate stats
+      if (r.duplicateStats) {
+        document.getElementById('dupProgressCard').style.display = 'block';
+        updateDuplicateProgress(r.duplicateStats);
+      }
+      // Restore legacy stats
       if (r.sellerStats) {
         document.getElementById('statsCard').style.display = 'flex';
         document.getElementById('statTotal').textContent = r.sellerStats.total || 0;
@@ -556,7 +748,15 @@
     });
   }
 
-  // ── Scanned brands ──
+  function updateDuplicateProgress(stats) {
+    const pct = stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : 0;
+    document.getElementById('dupProgressFill').style.width = pct + '%';
+    document.getElementById('dupProgressText').textContent = `${stats.processed} / ${stats.total}`;
+    document.getElementById('dupStatProcessed').textContent = stats.processed;
+    document.getElementById('dupStatFound').textContent = stats.found;
+  }
+
+  // ── Scanned brands (legacy) ──
   function renderScannedBrands(pageInfo) {
     const container = document.getElementById('scannedBrandsList');
     container.innerHTML = '';
@@ -598,6 +798,39 @@
 
   // ── Messages ──
   chrome.runtime.onMessage.addListener((msg) => {
+    // ── NEW: Duplicate search messages ──
+    if (msg.action === 'updateDuplicateStats') {
+      document.getElementById('dupProgressCard').style.display = 'block';
+      updateDuplicateProgress(msg.stats);
+    }
+
+    if (msg.action === 'duplicatePageDone') {
+      // Accumulate results in memory
+      if (msg.competitors && msg.competitors.length > 0) {
+        for (const comp of msg.competitors) {
+          if (!duplicateResults.some(r => r.sku === comp.sku && r.sourceSku === comp.sourceSku)) {
+            duplicateResults.push(comp);
+          }
+        }
+      }
+      renderDuplicateQuickResults();
+    }
+
+    if (msg.action === 'doneDuplicates') {
+      setRunningState(false);
+      document.getElementById('btnStartDuplicates').style.display = 'flex';
+      document.getElementById('btnStopDuplicates').style.display = 'none';
+      // Save results to config for persistence
+      if (msg.results && msg.results.length > 0) {
+        duplicateResults = msg.results;
+      }
+      config.lastDuplicateResults = duplicateResults;
+      saveConfig();
+      renderDuplicateQuickResults();
+      renderDuplicateReport();
+    }
+
+    // ── LEGACY: Brand protection messages ──
     if (msg.action === 'updateStats') {
       document.getElementById('statsCard').style.display = 'flex';
       document.getElementById('statTotal').textContent = msg.stats.total || 0;
@@ -611,9 +844,9 @@
       techLogLines.push(msg.text);
       if (techLogLines.length > 500) techLogLines = techLogLines.slice(-500);
       saveTechLogs();
-      // Update live if Техническая subtab is active
-      const techSubtab = document.getElementById('subtab-technical');
-      if (techSubtab && techSubtab.classList.contains('sub-content--active')) {
+      // Update tech log if report tab is visible
+      const reportTab = document.getElementById('tab-report');
+      if (reportTab && reportTab.classList.contains('tab-content--active')) {
         renderTechLog();
       }
     }

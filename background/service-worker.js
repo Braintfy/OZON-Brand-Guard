@@ -8,12 +8,14 @@ const ALARM_PRODUCTS = 'obg-schedule-products';
 let isRunning = false;
 let latestSellerStats = null;
 let latestProductStats = null;
+let latestDuplicateStats = null;
+let duplicateScanState = null; // { skus, currentIndex, results, config, tabId }
 
 // ── Message handling ──
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.action) {
     case 'getStatus':
-      sendResponse({ running: isRunning, sellerStats: latestSellerStats, productStats: latestProductStats });
+      sendResponse({ running: isRunning, sellerStats: latestSellerStats, productStats: latestProductStats, duplicateStats: latestDuplicateStats });
       return true;
 
     case 'setRunning':
@@ -27,6 +29,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'launchProducts':
       launchProducts(msg.config);
+      break;
+
+    case 'launchDuplicates':
+      launchDuplicateSearch(msg.skus, msg.config);
+      break;
+
+    case 'stopDuplicates':
+      stopDuplicateSearch();
       break;
 
     case 'updateSchedule':
@@ -62,6 +72,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       relayToExtensionPages(msg);
       break;
 
+    case 'updateDuplicateStats':
+      latestDuplicateStats = msg.stats;
+      relayToExtensionPages(msg);
+      break;
+
     case 'done':
       isRunning = false;
       relayToExtensionPages(msg);
@@ -70,6 +85,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'doneProducts':
       isRunning = false;
       relayToExtensionPages(msg);
+      break;
+
+    case 'duplicatePageResult':
+      handleDuplicatePageResult(msg);
+      break;
+
+    case 'duplicateScanStopped':
+      isRunning = false;
+      duplicateScanState = null;
+      relayToExtensionPages({ action: 'doneDuplicates' });
       break;
 
     case 'scanBrandsResult':
@@ -287,6 +312,140 @@ async function getConfig() {
       resolve(result.obgConfig || null);
     });
   });
+}
+
+// ── Launch duplicate search (sequential SKU processing) ──
+async function launchDuplicateSearch(skus, config) {
+  if (isRunning) { console.log('[OBG] Already running'); return; }
+  if (!skus || skus.length === 0) { console.log('[OBG] No SKUs to scan'); return; }
+  isRunning = true;
+  latestDuplicateStats = { total: skus.length, processed: 0, found: 0 };
+  duplicateScanState = { skus, currentIndex: 0, results: [], config, tabId: null };
+
+  console.log('[OBG] Launching duplicate search for', skus.length, 'SKUs');
+  relayToExtensionPages({ action: 'updateDuplicateStats', stats: latestDuplicateStats });
+  await processDuplicateSku(0);
+}
+
+async function processDuplicateSku(index) {
+  if (!duplicateScanState || index >= duplicateScanState.skus.length) {
+    // All done
+    isRunning = false;
+    relayToExtensionPages({ action: 'doneDuplicates', results: duplicateScanState?.results || [] });
+    console.log('[OBG] Duplicate search complete. Total found:', duplicateScanState?.results?.length || 0);
+    duplicateScanState = null;
+    return;
+  }
+
+  const sku = duplicateScanState.skus[index];
+  const url = `https://www.ozon.ru/product/${sku}/`;
+  console.log('[OBG] Processing SKU', sku, `(${index + 1}/${duplicateScanState.skus.length})`);
+
+  try {
+    // Find or create tab on ozon.ru
+    let tabId = duplicateScanState.tabId;
+    if (tabId) {
+      // Reuse existing tab
+      try {
+        await chrome.tabs.get(tabId); // Check tab still exists
+        await chrome.tabs.update(tabId, { url, active: true });
+      } catch (e) {
+        // Tab was closed, create new one
+        const tab = await chrome.tabs.create({ url });
+        tabId = tab.id;
+        duplicateScanState.tabId = tabId;
+      }
+    } else {
+      // Find existing ozon.ru tab or create new
+      const ozonTabs = await chrome.tabs.query({ url: 'https://www.ozon.ru/*' });
+      if (ozonTabs.length > 0) {
+        tabId = ozonTabs[0].id;
+        await chrome.tabs.update(tabId, { url, active: true });
+      } else {
+        const tab = await chrome.tabs.create({ url });
+        tabId = tab.id;
+      }
+      duplicateScanState.tabId = tabId;
+    }
+
+    await waitForTabComplete(tabId);
+    await wait(2500); // Wait for SPA rendering
+
+    // Inject content script
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content-duplicates.js'] });
+    } catch (e) { console.log('[OBG] inject duplicates:', e.message); }
+    await wait(500);
+
+    // Send scan command
+    duplicateScanState.currentIndex = index;
+    chrome.tabs.sendMessage(tabId, {
+      action: 'startDuplicateScan',
+      skus: duplicateScanState.skus,
+      currentIndex: index,
+      config: duplicateScanState.config
+    }, () => {
+      if (chrome.runtime.lastError) console.log('[OBG] sendMessage:', chrome.runtime.lastError.message);
+    });
+  } catch (e) {
+    console.log('[OBG] Error processing SKU', sku, ':', e.message);
+    // Move to next SKU on error
+    handleDuplicatePageResult({
+      sku,
+      competitors: [],
+      error: e.message,
+      pageIndex: index,
+      totalSkus: duplicateScanState.skus.length
+    });
+  }
+}
+
+function handleDuplicatePageResult(msg) {
+  if (!duplicateScanState) return;
+
+  const { sku, competitors, pageIndex } = msg;
+  console.log('[OBG] Page result for SKU', sku, '- found', competitors?.length || 0, 'competitors');
+
+  // Store results
+  if (competitors && competitors.length > 0) {
+    for (const comp of competitors) {
+      duplicateScanState.results.push({ ...comp, sourceSku: sku });
+    }
+  }
+
+  // Update stats
+  latestDuplicateStats = {
+    total: duplicateScanState.skus.length,
+    processed: (pageIndex || 0) + 1,
+    found: duplicateScanState.results.length
+  };
+  relayToExtensionPages({ action: 'updateDuplicateStats', stats: latestDuplicateStats });
+  relayToExtensionPages({ action: 'duplicatePageDone', sku, competitors: competitors || [], allResults: duplicateScanState.results });
+
+  // Process next SKU (with delay)
+  const nextIndex = (pageIndex || 0) + 1;
+  if (nextIndex < duplicateScanState.skus.length) {
+    const delay = (duplicateScanState.config?.duplicateDelay || 3) * 1000;
+    setTimeout(() => processDuplicateSku(nextIndex), delay);
+  } else {
+    // All done
+    isRunning = false;
+    relayToExtensionPages({ action: 'doneDuplicates', results: duplicateScanState.results });
+    console.log('[OBG] Duplicate search complete. Total:', duplicateScanState.results.length);
+    duplicateScanState = null;
+  }
+}
+
+function stopDuplicateSearch() {
+  if (duplicateScanState && duplicateScanState.tabId) {
+    chrome.tabs.sendMessage(duplicateScanState.tabId, { action: 'stopDuplicates' }, () => {
+      if (chrome.runtime.lastError) { /* ignore */ }
+    });
+  }
+  isRunning = false;
+  duplicateScanState = null;
+  latestDuplicateStats = null;
+  relayToExtensionPages({ action: 'doneDuplicates', results: [] });
 }
 
 // ── Init on install ──
