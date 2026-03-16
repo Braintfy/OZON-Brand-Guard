@@ -1,7 +1,7 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-16 | Версия: 3.6.0
+> Последнее обновление: 2026-03-16 | Версия: 3.6.1
 
 ## Архитектура
 
@@ -19,7 +19,7 @@ Chrome Extension (Manifest V3)
 ## Файлы и их роли
 
 ### manifest.json
-- **Manifest V3**, version `3.6.0`
+- **Manifest V3**, version `3.6.1`
 - Permissions: `storage`, `alarms`, `notifications`, `activeTab`, `scripting`, `tabs`
 - Host: `https://seller.ozon.ru/*`, `https://www.ozon.ru/*`
 - Content scripts инжектятся программно через `chrome.scripting.executeScript`

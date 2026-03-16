@@ -68,8 +68,8 @@
 
     if (shouldStop) return;
 
-    // Collect competitors from the page
-    const competitors = await collectCompetitors(currentSku);
+    // Collect competitors from the page (pass all own SKUs to exclude them)
+    const competitors = await collectCompetitors(currentSku, skus);
 
     if (shouldStop) return;
 
@@ -107,10 +107,16 @@
   }
 
   // ── Collect competitors from page ──
-  async function collectCompetitors(mySku) {
+  async function collectCompetitors(mySku, allOwnSkus) {
     const competitors = [];
     const seenSkus = new Set();
-    seenSkus.add(mySku); // Don't include own SKU
+    // Exclude ALL own SKUs (not just current) to avoid flagging own products as duplicates
+    if (allOwnSkus && allOwnSkus.length > 0) {
+      for (const sku of allOwnSkus) seenSkus.add(String(sku));
+      log(`[DIAG] Исключаю ${allOwnSkus.length} собственных SKU из результатов`);
+    } else {
+      seenSkus.add(mySku);
+    }
 
     // Strategy 1: Find "Есть дешевле" / "Другие продавцы" / "Предложения других продавцов" sections
     log('[DIAG] Стратегия 1: Поиск секций по ключевым словам...');
@@ -160,7 +166,7 @@
     // Apply whitelist filtering
     const filtered = applyWhitelist(competitors);
     if (filtered.length < competitors.length) {
-      log(`🟢 Отфильтровано по вайтлисту: ${competitors.length - filtered.length} товаров`);
+      log(`🟢 Вайтлист: пропущено ${competitors.length - filtered.length} из ${competitors.length} товаров, осталось ${filtered.length}`);
     }
 
     return filtered;
@@ -464,9 +470,13 @@
           case 'sku':
             if (item.sku === val) return false;
             break;
-          case 'seller':
-            if (item.seller.toLowerCase().includes(val) || val.includes(item.seller.toLowerCase())) return false;
+          case 'seller': {
+            const sellerLower = (item.seller || '').toLowerCase().trim();
+            // Skip matching if seller is empty — don't let empty string match everything
+            if (!sellerLower) break;
+            if (sellerLower.includes(val) || val.includes(sellerLower)) return false;
             break;
+          }
           case 'inn':
             // INN matching would require additional data from seller page
             break;
