@@ -506,6 +506,8 @@
       <div class="obg-dup-header" id="obg-dup-drag">
         <span>🔍 Brand Guard — Поиск дубликатов</span>
         <div class="obg-dup-header-btns">
+          <button id="obg-dup-pause" title="Пауза">⏸</button>
+          <button id="obg-dup-stop" title="Остановить">⏹</button>
           <button id="obg-dup-min" title="Свернуть">−</button>
           <button id="obg-dup-close" title="Закрыть">×</button>
         </div>
@@ -538,6 +540,8 @@
         font-size: 14px; display: flex; align-items: center; justify-content: center;
       }
       .obg-dup-header-btns button:hover { background: rgba(255,255,255,0.4); }
+      #obg-dup-pause.obg-paused { background: #ffab40; color: #000; }
+      #obg-dup-stop { font-size: 12px; }
       .obg-dup-body { padding: 10px 14px; max-height: 250px; overflow-y: auto; }
       .obg-dup-status { padding: 6px 0; font-weight: 500; color: #80cbc4; }
       .obg-dup-log { font-family: monospace; font-size: 11px; line-height: 1.5; }
@@ -559,6 +563,33 @@
     // Close
     document.getElementById('obg-dup-close').addEventListener('click', () => {
       panelEl.style.display = 'none';
+    });
+
+    // Pause/Resume
+    let panelPaused = false;
+    document.getElementById('obg-dup-pause').addEventListener('click', () => {
+      panelPaused = !panelPaused;
+      const btn = document.getElementById('obg-dup-pause');
+      if (panelPaused) {
+        btn.textContent = '▶';
+        btn.title = 'Продолжить';
+        btn.classList.add('obg-paused');
+        safeSend({ action: 'pauseDuplicates' });
+        log('⏸ Пауза запрошена');
+      } else {
+        btn.textContent = '⏸';
+        btn.title = 'Пауза';
+        btn.classList.remove('obg-paused');
+        safeSend({ action: 'resumeDuplicates' });
+        log('▶ Возобновление...');
+      }
+    });
+
+    // Stop
+    document.getElementById('obg-dup-stop').addEventListener('click', () => {
+      safeSend({ action: 'stopDuplicates' });
+      shouldStop = true;
+      log('⏹ Остановлено из панели');
     });
 
     // Drag

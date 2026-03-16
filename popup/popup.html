@@ -77,6 +77,7 @@
 
         <div class="btn-group">
           <button class="btn btn--primary btn--full" id="btnStartDuplicates">🔍 Найти дубликаты</button>
+          <button class="btn btn--pause btn--full" id="btnPauseDuplicates" style="display:none">⏸ Пауза</button>
           <button class="btn btn--danger btn--full" id="btnStopDuplicates" style="display:none">■ Остановить</button>
         </div>
       </div>
@@ -104,6 +105,7 @@
         </div>
         <div class="btn-group" style="margin-bottom:10px">
           <button class="btn btn--primary btn--small" id="btnCopyAllSkus">📋 Копировать все SKU</button>
+          <button class="btn btn--secondary btn--small" id="btnSkuExcel">📥 SKU Excel</button>
           <button class="btn btn--secondary btn--small" id="btnQuickExcel">📊 Excel</button>
           <button class="btn btn--secondary btn--small" id="btnGoReport">→ Отчёт</button>
         </div>
@@ -121,6 +123,7 @@
 
         <div class="btn-group" style="margin-bottom:10px">
           <button class="btn btn--primary btn--small" id="btnReportCopySkus">📋 Копировать SKU</button>
+          <button class="btn btn--secondary btn--small" id="btnReportSkuExcel">📥 SKU Excel</button>
           <button class="btn btn--secondary btn--small" id="btnReportExcel">📊 Excel</button>
           <button class="btn btn--secondary btn--small" id="btnReportCSV">📄 CSV</button>
           <button class="btn btn--danger btn--small" id="btnReportClear">🗑 Очистить</button>
@@ -154,6 +157,17 @@
           <div id="reportSellerGroups" class="dup-quick-list"></div>
           <p class="hint" id="reportSellersEmpty">Нет данных о продавцах</p>
         </div>
+      </div>
+
+      <!-- Search history -->
+      <div class="card">
+        <div class="log-header">
+          <h3>История поисков</h3>
+          <span class="log-count" id="historyCount">0</span>
+        </div>
+        <div id="historyList" class="history-list"></div>
+        <p class="hint" id="historyEmpty">Нет сохранённых сессий</p>
+        <button class="btn btn--danger btn--small" id="btnClearHistory" style="display:none;margin-top:8px">Очистить историю</button>
       </div>
 
       <!-- Technical log -->
@@ -481,7 +495,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>OZON Brand Guard v3.1.1</span>
+      <span>OZON Brand Guard v3.3.0</span>
       <a href="https://t.me/firayzer" target="_blank">by firayzer</a>
     </footer>
   </div>

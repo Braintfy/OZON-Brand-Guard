@@ -1123,6 +1123,76 @@ a:hover {
   padding: 6px;
 }
 
+/* Pause button */
+.btn--pause {
+  background: #ff9800;
+  color: #fff;
+}
+
+.btn--pause:hover {
+  background: #e68a00;
+}
+
+.btn--resume {
+  background: #2e7d32 !important;
+  color: #fff !important;
+}
+
+.btn--resume:hover {
+  background: #1b5e20 !important;
+}
+
+/* History list */
+.history-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #f8f8f8;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.history-item:hover {
+  background: #f0f0f0;
+}
+
+.history-item__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.history-item__date {
+  font-weight: 500;
+  color: #333;
+  white-space: nowrap;
+}
+
+.history-item__badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #e3f2fd;
+  color: #1565c0;
+  white-space: nowrap;
+}
+
+.history-item__actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 /* Footer */
 .footer {
   display: flex;

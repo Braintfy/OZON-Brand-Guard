@@ -6,16 +6,22 @@ const ALARM_PRODUCTS = 'obg-schedule-products';
 
 // ── State ──
 let isRunning = false;
+let isPaused = false;
 let latestSellerStats = null;
 let latestProductStats = null;
 let latestDuplicateStats = null;
-let duplicateScanState = null; // { skus, currentIndex, results, config, tabId }
+let duplicateScanState = null; // { skus, currentIndex, results, config, tabId, strategy }
 
 // ── Message handling ──
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.action) {
     case 'getStatus':
-      sendResponse({ running: isRunning, sellerStats: latestSellerStats, productStats: latestProductStats, duplicateStats: latestDuplicateStats });
+      sendResponse({
+        running: isRunning, paused: isPaused,
+        sellerStats: latestSellerStats, productStats: latestProductStats,
+        duplicateStats: latestDuplicateStats,
+        scanState: duplicateScanState ? { currentIndex: duplicateScanState.currentIndex, total: duplicateScanState.skus.length, resultsCount: duplicateScanState.results.length } : null
+      });
       return true;
 
     case 'setRunning':
@@ -32,7 +38,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'launchDuplicates':
-      launchDuplicateSearch(msg.skus, msg.config);
+      launchDuplicateSearch(msg.skus, msg.config, msg.strategy || 'manual');
       break;
 
     case 'launchCurrentPage':
@@ -53,7 +59,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         isRunning = false;
         duplicateScanState = null;
         relayToExtensionPages({ action: 'techLog', text: `[Пакетный] 🚀 Начинаю поиск дубликатов по ${msg.skus.length} товарам...` });
-        launchDuplicateSearch(msg.skus, savedConfig);
+        launchDuplicateSearch(msg.skus, savedConfig, 'batch');
       } else {
         relayToExtensionPages({ action: 'techLog', text: `[Пакетный] ❌ SKU не найдены в таблице товаров` });
         relayToExtensionPages({ action: 'doneDuplicates', results: [] });
@@ -62,9 +68,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       break;
 
+    case 'pauseDuplicates':
+      pauseDuplicateSearch();
+      break;
+
+    case 'resumeDuplicates':
+      resumeDuplicateSearch();
+      break;
+
     case 'stopDuplicates':
       stopDuplicateSearch();
       break;
+
+    case 'getHistory':
+      loadDuplicateHistory().then(h => sendResponse(h));
+      return true;
+
+    case 'clearHistory':
+      chrome.storage.local.set({ obgDupHistory: [] });
+      sendResponse({ ok: true });
+      return true;
 
     case 'updateSchedule':
       updateSchedule(msg.config);
@@ -342,12 +365,13 @@ async function getConfig() {
 }
 
 // ── Launch duplicate search (sequential SKU processing) ──
-async function launchDuplicateSearch(skus, config) {
+async function launchDuplicateSearch(skus, config, strategy) {
   if (isRunning) { console.log('[OBG] Already running'); return; }
   if (!skus || skus.length === 0) { console.log('[OBG] No SKUs to scan'); return; }
   isRunning = true;
+  isPaused = false;
   latestDuplicateStats = { total: skus.length, processed: 0, found: 0 };
-  duplicateScanState = { skus, currentIndex: 0, results: [], config, tabId: null };
+  duplicateScanState = { skus, currentIndex: 0, results: [], config, tabId: null, strategy: strategy || 'manual' };
 
   console.log('[OBG] Launching duplicate search for', skus.length, 'SKUs');
   relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] 🔍 Запускаю поиск дубликатов по ${skus.length} SKU...` });
@@ -459,29 +483,86 @@ function handleDuplicatePageResult(msg) {
   // Process next SKU (with delay)
   const nextIndex = processed;
   if (nextIndex < total) {
+    // Check if paused
+    if (isPaused) {
+      duplicateScanState.currentIndex = nextIndex;
+      relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ⏸ Пауза. Обработано ${processed}/${total}, найдено ${duplicateScanState.results.length} дубликатов` });
+      relayToExtensionPages({ action: 'duplicateScanPaused', results: duplicateScanState.results, processed, total });
+      return;
+    }
     const delay = (duplicateScanState.config?.duplicateDelay || 3) * 1000;
     setTimeout(() => processDuplicateSku(nextIndex), delay);
   } else {
     // All done
     isRunning = false;
+    isPaused = false;
     const totalFound = duplicateScanState.results.length;
     relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ✅ Готово! Обработано ${total} SKU, найдено ${totalFound} дубликатов` });
     relayToExtensionPages({ action: 'doneDuplicates', results: duplicateScanState.results });
     console.log('[OBG] Duplicate search complete. Total:', totalFound);
+    saveDuplicateSession(duplicateScanState, 'completed');
     duplicateScanState = null;
   }
 }
 
+function pauseDuplicateSearch() {
+  if (!duplicateScanState || !isRunning) return;
+  isPaused = true;
+  relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ⏸ Пауза запрошена, ожидаю завершения текущего SKU...` });
+  console.log('[OBG] Duplicate search paused');
+}
+
+function resumeDuplicateSearch() {
+  if (!duplicateScanState || !isPaused) return;
+  isPaused = false;
+  const nextIndex = duplicateScanState.currentIndex;
+  relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ▶ Возобновление с SKU ${nextIndex + 1}/${duplicateScanState.skus.length}...` });
+  relayToExtensionPages({ action: 'duplicateScanResumed' });
+  console.log('[OBG] Duplicate search resumed from index', nextIndex);
+  processDuplicateSku(nextIndex);
+}
+
 function stopDuplicateSearch() {
+  const partialResults = duplicateScanState?.results || [];
   if (duplicateScanState && duplicateScanState.tabId) {
     chrome.tabs.sendMessage(duplicateScanState.tabId, { action: 'stopDuplicates' }, () => {
       if (chrome.runtime.lastError) { /* ignore */ }
     });
   }
+  if (duplicateScanState && partialResults.length > 0) {
+    saveDuplicateSession(duplicateScanState, 'stopped');
+  }
   isRunning = false;
-  duplicateScanState = null;
+  isPaused = false;
   latestDuplicateStats = null;
-  relayToExtensionPages({ action: 'doneDuplicates', results: [] });
+  relayToExtensionPages({ action: 'doneDuplicates', results: partialResults });
+  duplicateScanState = null;
+}
+
+// ── Duplicate search history (last 10 sessions) ──
+async function saveDuplicateSession(state, status) {
+  if (!state || !state.results || state.results.length === 0) return;
+  const history = await loadDuplicateHistory();
+  history.unshift({
+    id: 'dup_' + Date.now(),
+    date: new Date().toISOString(),
+    strategy: state.strategy || 'manual',
+    skusInput: state.skus || [],
+    results: state.results,
+    totalSkus: state.skus?.length || 0,
+    processedSkus: (state.currentIndex || 0) + (status === 'completed' ? 0 : 0),
+    status
+  });
+  // Keep last 10
+  if (history.length > 10) history.length = 10;
+  await chrome.storage.local.set({ obgDupHistory: history });
+  console.log('[OBG] Saved duplicate session:', status, 'results:', state.results.length);
+}
+
+async function loadDuplicateHistory() {
+  return new Promise(resolve => {
+    chrome.storage.local.get('obgDupHistory', r => resolve(r.obgDupHistory || []));
+  });
 }
 
 // ── Launch current page scan (get SKU from active ozon.ru tab) ──
@@ -501,7 +582,7 @@ async function launchCurrentPageScan(config) {
     }
     const sku = match[1];
     console.log('[OBG] Current page SKU:', sku);
-    await launchDuplicateSearch([sku], config);
+    await launchDuplicateSearch([sku], config, 'current');
   } catch (e) {
     console.log('[OBG] launchCurrentPageScan error:', e.message);
     relayToExtensionPages({ action: 'doneDuplicates', results: [], error: e.message });
@@ -514,7 +595,7 @@ async function launchBatchFromProducts(config) {
   if (isRunning) { console.log('[OBG] Already running'); return; }
   isRunning = true;
   latestDuplicateStats = { total: 0, processed: 0, found: 0 };
-  duplicateScanState = { skus: [], currentIndex: 0, results: [], config, tabId: null };
+  duplicateScanState = { skus: [], currentIndex: 0, results: [], config, tabId: null, strategy: 'batch' };
   relayToExtensionPages({ action: 'updateDuplicateStats', stats: latestDuplicateStats });
 
   console.log('[OBG] Launching batch from seller products page');

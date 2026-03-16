@@ -36,16 +36,26 @@
   let accumulatedBrands = {};
   let techLogLines = [];
   let duplicateResults = []; // In-memory results for current session
+  let dupHistory = []; // Last 10 search sessions
+  let scanPaused = false;
 
   // ── Init ──
   async function init() {
     config = await loadConfig();
     techLogLines = await loadTechLogs();
     duplicateResults = config.lastDuplicateResults || [];
+    dupHistory = await loadHistory();
     trimLog();
     renderAll();
     bindEvents();
     updateStatusFromBackground();
+  }
+
+  // ── History persistence ──
+  function loadHistory() {
+    return new Promise(resolve => {
+      safeSendRuntime({ action: 'getHistory' }, h => resolve(h || []));
+    });
   }
 
   // ── Tech log persistence ──
@@ -143,6 +153,7 @@
     renderDupWhitelist();
     renderDuplicateReport();
     renderDuplicateQuickResults();
+    renderHistory();
     renderBrands();
     renderWhitelist();
     renderCountryFilters();
@@ -324,6 +335,72 @@
           btn.textContent = '✓';
           setTimeout(() => btn.textContent = '📋 SKU', 1500);
         });
+      });
+    });
+  }
+
+  // ── History rendering ──
+  function renderHistory() {
+    const list = document.getElementById('historyList');
+    const emptyMsg = document.getElementById('historyEmpty');
+    const countEl = document.getElementById('historyCount');
+    const clearBtn = document.getElementById('btnClearHistory');
+    if (!list) return;
+
+    countEl.textContent = dupHistory.length;
+    if (dupHistory.length === 0) {
+      list.innerHTML = '';
+      emptyMsg.style.display = 'block';
+      clearBtn.style.display = 'none';
+      return;
+    }
+    emptyMsg.style.display = 'none';
+    clearBtn.style.display = 'inline-flex';
+    list.innerHTML = '';
+
+    dupHistory.forEach((session, idx) => {
+      const d = new Date(session.date);
+      const dateStr = d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      const stratLabel = { manual: 'Ручной', current: 'Страница', batch: 'Пакетный' }[session.strategy] || session.strategy;
+      const statusLabel = { completed: '✅', stopped: '⏹', paused: '⏸' }[session.status] || '';
+      const uniqueSkus = [...new Set((session.results || []).map(r => r.sku))];
+
+      const div = document.createElement('div');
+      div.className = 'history-item';
+      div.innerHTML = `
+        <div class="history-item__header">
+          <span class="history-item__date">${esc(dateStr)}</span>
+          <span class="history-item__badge">${esc(stratLabel)}</span>
+          <span>${statusLabel} ${session.results?.length || 0} дубл.</span>
+        </div>
+        <div class="history-item__actions">
+          <button class="btn btn--small btn--secondary history-load" data-idx="${idx}">Загрузить</button>
+          <button class="btn btn--small btn--secondary history-sku-excel" data-idx="${idx}">📥 SKU</button>
+        </div>`;
+      list.appendChild(div);
+    });
+
+    list.querySelectorAll('.history-load').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const session = dupHistory[idx];
+        if (!session) return;
+        duplicateResults = session.results || [];
+        config.lastDuplicateResults = duplicateResults;
+        saveConfig();
+        renderDuplicateQuickResults();
+        renderDuplicateReport();
+        btn.textContent = '✓';
+        setTimeout(() => btn.textContent = 'Загрузить', 1500);
+      });
+    });
+
+    list.querySelectorAll('.history-sku-excel').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const session = dupHistory[idx];
+        if (!session || !session.results) return;
+        exportSkuListExcel(session.results);
       });
     });
   }
@@ -569,7 +646,7 @@
         if (skus.length === 0) { alert('Введите хотя бы один SKU (числовой артикул OZON)'); return; }
         config.savedSkuInput = raw;
         await saveConfig();
-        safeSendRuntime({ action: 'launchDuplicates', skus, config: dupConfig });
+        safeSendRuntime({ action: 'launchDuplicates', skus, config: dupConfig, strategy: 'manual' });
       } else if (currentStrategy === 'current') {
         safeSendRuntime({ action: 'launchCurrentPage', config: dupConfig });
       } else if (currentStrategy === 'batch') {
@@ -577,16 +654,37 @@
       }
 
       document.getElementById('btnStartDuplicates').style.display = 'none';
+      document.getElementById('btnPauseDuplicates').style.display = 'flex';
       document.getElementById('btnStopDuplicates').style.display = 'flex';
       document.getElementById('dupProgressCard').style.display = 'block';
+      scanPaused = false;
+      document.getElementById('btnPauseDuplicates').textContent = '⏸ Пауза';
+      document.getElementById('btnPauseDuplicates').classList.remove('btn--resume');
       setRunningState(true);
+    });
+
+    // Pause/Resume duplicate search
+    document.getElementById('btnPauseDuplicates').addEventListener('click', () => {
+      if (!scanPaused) {
+        scanPaused = true;
+        safeSendRuntime({ action: 'pauseDuplicates' });
+        document.getElementById('btnPauseDuplicates').textContent = '▶ Продолжить';
+        document.getElementById('btnPauseDuplicates').classList.add('btn--resume');
+      } else {
+        scanPaused = false;
+        safeSendRuntime({ action: 'resumeDuplicates' });
+        document.getElementById('btnPauseDuplicates').textContent = '⏸ Пауза';
+        document.getElementById('btnPauseDuplicates').classList.remove('btn--resume');
+      }
     });
 
     // Stop duplicate search
     document.getElementById('btnStopDuplicates').addEventListener('click', () => {
+      scanPaused = false;
       safeSendRuntime({ action: 'stopDuplicates' });
       document.getElementById('btnStartDuplicates').style.display = 'flex';
       document.getElementById('btnStopDuplicates').style.display = 'none';
+      document.getElementById('btnPauseDuplicates').style.display = 'none';
       setRunningState(false);
     });
 
@@ -608,6 +706,11 @@
     const excelHandler = () => exportDuplicatesExcel();
     document.getElementById('btnQuickExcel').addEventListener('click', excelHandler);
     document.getElementById('btnReportExcel').addEventListener('click', excelHandler);
+
+    // SKU-only Excel export
+    const skuExcelHandler = () => exportSkuListExcel(duplicateResults);
+    document.getElementById('btnSkuExcel').addEventListener('click', skuExcelHandler);
+    document.getElementById('btnReportSkuExcel').addEventListener('click', skuExcelHandler);
 
     // Report CSV
     document.getElementById('btnReportCSV').addEventListener('click', () => exportDuplicatesCSV());
@@ -642,6 +745,14 @@
       await saveConfig();
       renderDuplicateReport();
       renderDuplicateQuickResults();
+    });
+
+    // Clear history
+    document.getElementById('btnClearHistory').addEventListener('click', () => {
+      if (!confirm('Очистить историю поисков?')) return;
+      safeSendRuntime({ action: 'clearHistory' });
+      dupHistory = [];
+      renderHistory();
     });
 
     // Duplicate whitelist
@@ -822,6 +933,17 @@
     downloadFile(csv, `duplicates_${ts}.csv`, 'text/csv;charset=utf-8');
   }
 
+  // ── SKU-only Excel export ──
+  function exportSkuListExcel(results) {
+    if (!results || results.length === 0) return;
+    const uniqueSkus = [...new Set(results.map(r => r.sku).filter(Boolean))];
+    let h = '<html><head><meta charset="UTF-8"></head><body><table border="1" style="border-collapse:collapse;font-family:Arial;font-size:12px">';
+    h += '<tr style="background:#005bff;color:#fff;font-weight:bold"><th>SKU нарушителя</th></tr>';
+    uniqueSkus.forEach(sku => { h += `<tr><td>${esc(sku)}</td></tr>`; });
+    const ts = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
+    downloadFile(h + '</table></body></html>', `violator_skus_${ts}.xls`, 'application/vnd.ms-excel;charset=utf-8');
+  }
+
   // ── State ──
   function setRunningState(running) {
     document.getElementById('btnStart').style.display = running ? 'none' : 'flex';
@@ -834,7 +956,17 @@
   function updateStatusFromBackground() {
     safeSendRuntime({ action: 'getStatus' }, (r) => {
       if (!r) return;
-      if (r.running) setRunningState(true);
+      if (r.running) {
+        setRunningState(true);
+        document.getElementById('btnStartDuplicates').style.display = 'none';
+        document.getElementById('btnPauseDuplicates').style.display = 'flex';
+        document.getElementById('btnStopDuplicates').style.display = 'flex';
+        if (r.paused) {
+          scanPaused = true;
+          document.getElementById('btnPauseDuplicates').textContent = '▶ Продолжить';
+          document.getElementById('btnPauseDuplicates').classList.add('btn--resume');
+        }
+      }
       // Restore duplicate stats
       if (r.duplicateStats) {
         document.getElementById('dupProgressCard').style.display = 'block';
@@ -935,10 +1067,29 @@
       renderDuplicateQuickResults();
     }
 
+    if (msg.action === 'duplicateScanPaused') {
+      // Partial results available during pause
+      if (msg.results && msg.results.length > 0) {
+        duplicateResults = msg.results;
+        config.lastDuplicateResults = duplicateResults;
+        saveConfig();
+        renderDuplicateQuickResults();
+        renderDuplicateReport();
+      }
+    }
+
+    if (msg.action === 'duplicateScanResumed') {
+      scanPaused = false;
+      document.getElementById('btnPauseDuplicates').textContent = '⏸ Пауза';
+      document.getElementById('btnPauseDuplicates').classList.remove('btn--resume');
+    }
+
     if (msg.action === 'doneDuplicates') {
       setRunningState(false);
+      scanPaused = false;
       document.getElementById('btnStartDuplicates').style.display = 'flex';
       document.getElementById('btnStopDuplicates').style.display = 'none';
+      document.getElementById('btnPauseDuplicates').style.display = 'none';
       // Save results to config for persistence
       if (msg.results && msg.results.length > 0) {
         duplicateResults = msg.results;
@@ -947,6 +1098,8 @@
       saveConfig();
       renderDuplicateQuickResults();
       renderDuplicateReport();
+      // Refresh history
+      loadHistory().then(h => { dupHistory = h; renderHistory(); });
     }
 
     // ── LEGACY: Brand protection messages ──
