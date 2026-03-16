@@ -1,8 +1,8 @@
-// OZON Brand Guard — Batch Products SKU Collector v3.5.0
+// OZON Brand Guard — Batch Products SKU Collector v3.6.0
 // Работает на seller.ozon.ru/app/products*
 // Парсит таблицу товаров продавца и извлекает SKU для пакетного поиска дубликатов
-// Поддерживает виртуальный скроллинг: прокручивает таблицу для сбора всех строк
-// Фильтрует по статусу: пропускает «Не продается» (убранные из продажи)
+// Поддерживает виртуальный скроллинг: прокручивает СТРАНИЦУ (window.scrollTo)
+// Фильтрует по статусу: пропускает «Не продается», «Убран из продажи», «Заблокирован»
 // Автор: firayzer (https://t.me/firayzer)
 
 (function () {
@@ -10,9 +10,7 @@
 
   // Тройная защита от двойной инъекции
   if (window.__obgBatchLoaded) {
-    // Если SPA-навигация удалила guard но флаг остался — скрипт ещё живой
     if (document.getElementById('__obg-batch-guard')) return;
-    // Guard удалён — SPA перешёл на другую страницу и вернулся, нужна переинъекция
   }
   window.__obgBatchLoaded = true;
 
@@ -40,56 +38,100 @@
         log('⚠ Сбор уже запущен, пропускаю повторный вызов');
         return;
       }
-      isCollecting = true; // Ставим флаг СРАЗУ, до async вызова
+      isCollecting = true;
       collectAllSkus();
     }
   });
 
-  /* ────── Определение колонки статуса по заголовкам ────── */
+  /* ════════════════════════════════════════════════════════════════
+     ДИАГНОСТИКА: Информация со вкладок и таблицы
+     ════════════════════════════════════════════════════════════════ */
 
+  /**
+   * Считывает ожидаемое количество товаров из вкладки «Все» (или активной вкладки).
+   * Вкладки: button[data-widget="@products/tabs/products-list-filter-tab"]
+   * Внутри: div.rc8110-a0 содержит число (напр. "72")
+   */
+  function getExpectedCountFromTabs() {
+    // Ищем активную вкладку (data-active="true") или первую вкладку ("Все")
+    const tabs = document.querySelectorAll('button[data-widget="@products/tabs/products-list-filter-tab"]');
+    for (const tab of tabs) {
+      const isActive = tab.getAttribute('data-active') === 'true';
+      const text = tab.textContent || '';
+      // Первая вкладка обычно "Все" с общим количеством
+      if (isActive || /^\s*все\s/i.test(text)) {
+        const countEl = tab.querySelector('.rc8110-a0') || tab.querySelector('[class*="rc8110"]');
+        if (countEl) {
+          const num = parseInt(countEl.textContent.trim());
+          if (num > 0) return num;
+        }
+        // Фоллбэк: ищем число в тексте вкладки
+        const m = text.match(/(\d+)/);
+        if (m) return parseInt(m[1]);
+      }
+    }
+    return -1; // неизвестно
+  }
+
+  /**
+   * Определяет колонку статуса по заголовку th[data-cell-name="th-status"]
+   */
   function getStatusColumnIndex() {
     const headers = document.querySelectorAll('table thead th');
     for (let i = 0; i < headers.length; i++) {
       if (headers[i].getAttribute('data-cell-name') === 'th-status') return i;
     }
-    // Фоллбэк: ищем заголовок с текстом "Статус"
     for (let i = 0; i < headers.length; i++) {
       if (/статус/i.test(headers[i].textContent.trim())) return i;
     }
     return -1;
   }
 
-  /** Проверяет статус строки. Возвращает true если товар НЕ убран из продажи */
+  /**
+   * Проверяет статус строки. true = товар активен.
+   * Статусы «Не продается», «Убран из продажи», «Заблокирован», «Сняты с продажи» → false.
+   */
   function isRowActive(row, statusIdx) {
     if (statusIdx < 0) return true;
     const tds = row.querySelectorAll('td');
     if (statusIdx >= tds.length) return true;
     const text = tds[statusIdx].textContent.trim().toLowerCase();
-    if (/не продаётся|не продается|убран из продажи|заблокирован/i.test(text)) return false;
+    if (/не продаётся|не продается|убран из продажи|заблокирован|снят[аоы]? с продажи/i.test(text)) return false;
     return true;
   }
 
-  /* ────── Основной цикл сбора ────── */
+  /* ════════════════════════════════════════════════════════════════
+     ГЛАВНЫЙ ЦИКЛ СБОРА
+     ════════════════════════════════════════════════════════════════ */
 
   async function collectAllSkus() {
     log('Начинаю сбор SKU из таблицы товаров...');
+
+    const expectedTotal = getExpectedCountFromTabs();
+    log(`Ожидаемое кол-во (из вкладки): ${expectedTotal > 0 ? expectedTotal : 'неизвестно'}`);
+
     const allSkus = new Set();
     let totalSkipped = 0;
     let page = 1;
 
     try {
       while (true) {
-        await waitForTableStable();
+        await waitForTableReady();
 
-        // Прокручиваем таблицу для сбора ВСЕХ строк (виртуальный скроллинг)
-        const { skus, skipped } = await scrollAndCollectPageSkus();
+        const { skus, skipped } = await scrollPageAndCollect();
         totalSkipped += skipped;
         const newSkus = skus.filter(s => !allSkus.has(s));
         newSkus.forEach(s => allSkus.add(s));
 
-        log(`Страница ${page}: ${newSkus.length} SKU собрано` + (skipped > 0 ? `, ${skipped} пропущено (не продаётся)` : ''));
+        log(`Стр. ${page}: +${newSkus.length} SKU` + (skipped > 0 ? `, ${skipped} пропущено` : '') + ` (всего: ${allSkus.size})`);
         if (newSkus.length > 0) {
-          log(`   SKU: ${newSkus.slice(0, 5).join(', ')}${newSkus.length > 5 ? '...' : ''}`);
+          log(`  Примеры: ${newSkus.slice(0, 5).join(', ')}${newSkus.length > 5 ? '...' : ''}`);
+        }
+
+        // Проверяем: набрали ли уже все?
+        if (expectedTotal > 0 && allSkus.size + totalSkipped >= expectedTotal) {
+          log(`Собрано ${allSkus.size} + пропущено ${totalSkipped} = ${allSkus.size + totalSkipped} ≥ ${expectedTotal}, завершаю`);
+          break;
         }
 
         const hasNext = await goToNextPage();
@@ -101,164 +143,170 @@
       }
 
       const uniqueSkus = [...allSkus];
-      log(`Итого: ${uniqueSkus.length} SKU из ${page} стр.` + (totalSkipped > 0 ? `, пропущено ${totalSkipped} (не продаётся)` : ''));
-      log('Отправляю SKU на обработку...');
+      log(`✓ Итого: ${uniqueSkus.length} SKU из ${page} стр.` + (totalSkipped > 0 ? `, пропущено ${totalSkipped}` : ''));
       safeSend({ action: 'batchSkusCollected', skus: uniqueSkus });
     } catch (e) {
-      log(`Ошибка сбора SKU: ${e.message}`);
-      safeSend({ action: 'batchSkusCollected', skus: [...allSkus] });
+      log(`❌ Ошибка: ${e.message}`);
+      safeSend({ action: 'batchSkusCollected', skus: [...allSkus], error: e.message });
     } finally {
       isCollecting = false;
     }
   }
 
-  /* ────── Прокрутка + сбор всех строк со страницы ────── */
+  /* ════════════════════════════════════════════════════════════════
+     ПРОКРУТКА СТРАНИЦЫ + СБОР
+     Ключевой принцип: прокручиваем window (не контейнер),
+     потому что виртуальный скроллинг OZON привязан к скроллу страницы.
+     ════════════════════════════════════════════════════════════════ */
 
-  async function scrollAndCollectPageSkus() {
+  async function scrollPageAndCollect() {
     const seenSkus = new Set();
-    const seenRowKeys = new Set();
     const skus = [];
     let skipped = 0;
     const statusIdx = getStatusColumnIndex();
 
-    // Находим прокручиваемый контейнер
-    const scrollTarget = findScrollContainer();
-    log(`Скролл-контейнер: ${scrollTarget ? scrollTarget.tagName + ' (scrollHeight=' + scrollTarget.scrollHeight + ', clientHeight=' + scrollTarget.clientHeight + ')' : 'не найден'}`);
+    // Фаза 1: Простой сбор — может все строки уже в DOM
+    const directResult = collectVisibleSkus(statusIdx, seenSkus);
+    skus.push(...directResult.skus);
+    skipped += directResult.skipped;
 
-    // Шаг 1: Прокрутим вверх для начала
-    if (scrollTarget) {
-      scrollTarget.scrollTop = 0;
-      await sleep(300);
-    }
+    log(`[DIAG] Фаза 1 (direct query): ${seenSkus.size} SKU, ${skipped} пропущено, строк в DOM: ${document.querySelectorAll('table tbody tr').length}`);
 
-    // Шаг 2: Собираем видимые строки
-    const initial = parseVisibleRows(statusIdx, seenSkus, seenRowKeys);
-    skus.push(...initial.skus);
-    skipped += initial.skipped;
+    // Фаза 2: Прокрутка window для рендеринга виртуальных строк
+    const table = document.querySelector('table');
+    if (!table) return { skus, skipped };
 
-    // Шаг 3: Если есть куда скроллить — прокручиваем и собираем
-    if (scrollTarget && scrollTarget.scrollHeight > scrollTarget.clientHeight + 50) {
-      const scrollStep = Math.max(200, Math.floor(scrollTarget.clientHeight * 0.6));
-      let noNewRounds = 0;
-      let prevSize = seenSkus.size + skipped;
+    // Находим прокручиваемый элемент
+    const scrollEl = findScrollableElement(table);
+    const isWindow = scrollEl === null;
+    const scrollName = isWindow ? 'window' : scrollEl.tagName + '.' + (scrollEl.className || '').split(' ')[0];
 
-      for (let pos = scrollStep; pos < scrollTarget.scrollHeight + scrollStep * 2; pos += scrollStep) {
-        scrollTarget.scrollTop = pos;
-        await sleep(400);
+    const getScrollTop = () => isWindow ? window.scrollY : scrollEl.scrollTop;
+    const getScrollHeight = () => isWindow ? document.documentElement.scrollHeight : scrollEl.scrollHeight;
+    const getViewHeight = () => isWindow ? window.innerHeight : scrollEl.clientHeight;
+    const doScroll = (y) => isWindow ? window.scrollTo({ top: y, behavior: 'instant' }) : (scrollEl.scrollTop = y);
 
-        const batch = parseVisibleRows(statusIdx, seenSkus, seenRowKeys);
-        skus.push(...batch.skus);
-        skipped += batch.skipped;
+    log(`[DIAG] Скроллинг через: ${scrollName}, scrollHeight=${getScrollHeight()}, viewHeight=${getViewHeight()}`);
 
-        const currentSize = seenSkus.size + skipped;
-        if (currentSize === prevSize) {
-          noNewRounds++;
-          if (noNewRounds >= 4) break;
-        } else {
-          noNewRounds = 0;
-          prevSize = currentSize;
-        }
+    // Скроллим в начало
+    doScroll(0);
+    await sleep(300);
 
-        // Проверяем дошли ли до конца
-        if (scrollTarget.scrollTop + scrollTarget.clientHeight >= scrollTarget.scrollHeight - 10) {
-          // Дошли до конца, ждём и делаем ещё одну попытку
-          await sleep(300);
-          const extra = parseVisibleRows(statusIdx, seenSkus, seenRowKeys);
-          skus.push(...extra.skus);
-          skipped += extra.skipped;
+    // Собираем после скролла в начало
+    const afterTop = collectVisibleSkus(statusIdx, seenSkus);
+    skus.push(...afterTop.skus);
+    skipped += afterTop.skipped;
+
+    // Инкрементальная прокрутка
+    const viewH = getViewHeight();
+    const step = Math.max(200, Math.floor(viewH * 0.7));
+    let noNewCount = 0;
+    let prevTotal = seenSkus.size + skipped;
+    const maxScroll = getScrollHeight();
+
+    for (let y = step; y <= maxScroll + step; y += step) {
+      doScroll(y);
+      await sleep(350);
+
+      const batch = collectVisibleSkus(statusIdx, seenSkus);
+      skus.push(...batch.skus);
+      skipped += batch.skipped;
+
+      const newTotal = seenSkus.size + skipped;
+      if (newTotal === prevTotal) {
+        noNewCount++;
+        if (noNewCount >= 6) {
+          log(`[DIAG] 6 шагов без новых строк, прерываю (y=${y})`);
           break;
         }
+      } else {
+        noNewCount = 0;
+        prevTotal = newTotal;
       }
 
-      // Возвращаем скролл наверх
-      scrollTarget.scrollTop = 0;
-      await sleep(200);
+      // Дошли до конца?
+      const curTop = getScrollTop();
+      if (curTop + getViewHeight() >= getScrollHeight() - 20) {
+        await sleep(300);
+        const last = collectVisibleSkus(statusIdx, seenSkus);
+        skus.push(...last.skus);
+        skipped += last.skipped;
+        break;
+      }
     }
 
-    log(`Прокрутка страницы: ${skus.length} SKU, ${skipped} пропущено, ${seenRowKeys.size} строк обработано`);
+    // Возвращаем скролл наверх
+    doScroll(0);
+
+    log(`[DIAG] Фаза 2 итого: ${skus.length} SKU, ${skipped} пропущено`);
     return { skus, skipped };
   }
 
-  /** Находит прокручиваемый контейнер таблицы */
-  function findScrollContainer() {
-    const table = document.querySelector('table');
-    if (!table) return null;
-
-    // Ищем ближайший родительский элемент с overflow scroll/auto
+  /**
+   * Ищет ближайший прокручиваемый контейнер таблицы.
+   * Возвращает DOM-элемент или null (если скроллится window).
+   */
+  function findScrollableElement(table) {
     let el = table.parentElement;
     while (el && el !== document.documentElement && el !== document.body) {
       const style = getComputedStyle(el);
-      const oy = style.overflowY || style.overflow;
-      if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 50) {
+      const oy = style.overflowY;
+      if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && el.scrollHeight > el.clientHeight + 100) {
         return el;
       }
       el = el.parentElement;
     }
-
-    // Фоллбэк: сам document.documentElement (прокрутка всей страницы)
-    if (document.documentElement.scrollHeight > window.innerHeight + 100) {
-      return document.documentElement;
-    }
-
+    // Нет контейнера — скроллить window
     return null;
   }
 
-  /** Парсит текущие видимые строки таблицы, пропуская уже обработанные */
-  function parseVisibleRows(statusIdx, seenSkus, seenRowKeys) {
+  /* ════════════════════════════════════════════════════════════════
+     ИЗВЛЕЧЕНИЕ SKU ИЗ ВИДИМЫХ СТРОК
+     ════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Собирает SKU из всех текущих строк таблицы.
+   * Дедупликация через seenSkus (Set).
+   */
+  function collectVisibleSkus(statusIdx, seenSkus) {
     const skus = [];
     let skipped = 0;
     const rows = document.querySelectorAll('table tbody tr');
 
     for (const row of rows) {
-      // Уникальный ключ строки для дедупликации
       const sku = extractSkuFromRow(row);
-      const rowKey = sku || row.querySelector('td:nth-child(2)')?.textContent?.trim()?.substring(0, 50) || '';
-      if (!rowKey || seenRowKeys.has(rowKey)) continue;
-      seenRowKeys.add(rowKey);
+      if (!sku) continue;
+      if (seenSkus.has(sku)) continue;
 
       if (!isRowActive(row, statusIdx)) {
+        seenSkus.add(sku); // Добавляем в seen чтобы не проверять повторно
         skipped++;
         continue;
       }
 
-      if (sku && !seenSkus.has(sku)) {
-        seenSkus.add(sku);
-        skus.push(sku);
-      }
+      seenSkus.add(sku);
+      skus.push(sku);
     }
 
     return { skus, skipped };
   }
 
-  /* ────── Парсинг строк таблицы (legacy, для совместимости) ────── */
-
-  function parseCurrentPageSkus() {
-    const skus = [];
-    let skipped = 0;
-    const statusIdx = getStatusColumnIndex();
-    const rows = document.querySelectorAll('table tbody tr');
-
-    for (const row of rows) {
-      if (!isRowActive(row, statusIdx)) {
-        skipped++;
-        continue;
-      }
-      const sku = extractSkuFromRow(row);
-      if (sku) skus.push(sku);
-    }
-
-    return { skus, skipped };
-  }
-
-  /** Извлекает SKU из одной строки таблицы (4 стратегии) */
+  /**
+   * Извлекает SKU из одной строки таблицы.
+   * Приоритет селекторов основан на анализе DOM:
+   * 1. span[data-widget="@products/list-ods/table/cell/sku-fbs/span"] → "SKU  3553435313"
+   * 2. a[data-widget="products-table-row-title-link"] → href "/product/3553435313"
+   * 3. span[data-style="text"] → "OZN3553435313"
+   * 4. Любой текст "SKU XXXXX" в строке
+   */
   function extractSkuFromRow(row) {
-    // Strategy 1: data-widget SKU span
+    // Strategy 1: data-widget SKU span (самый надёжный)
     const skuSpan = row.querySelector('[data-widget="@products/list-ods/table/cell/sku-fbs/span"]');
     if (skuSpan) {
-      const m = skuSpan.textContent.trim().match(/SKU\s+(\d{5,})/);
+      const m = skuSpan.textContent.trim().match(/(\d{5,})/);
       if (m) return m[1];
     }
-    // Strategy 2: product title link
+    // Strategy 2: product title link href
     const link = row.querySelector('a[data-widget="products-table-row-title-link"]');
     if (link) {
       const m = (link.getAttribute('href') || '').match(/\/product\/(\d{5,})/);
@@ -270,139 +318,157 @@
       const m = barcode.textContent.trim().match(/OZN(\d{5,})/);
       if (m) return m[1];
     }
-    // Strategy 4: Текст "SKU XXXXXXX" в любом элементе строки
-    const allText = row.textContent;
-    const skuMatch = allText.match(/SKU\s+(\d{5,})/);
-    if (skuMatch) return skuMatch[1];
+    // Strategy 4: fallback — любой "SKU XXXX" в строке
+    const m = row.textContent.match(/SKU\s+(\d{5,})/);
+    if (m) return m[1];
 
     return null;
   }
 
-  /* ────── Ожидание полной загрузки таблицы ────── */
+  /* ════════════════════════════════════════════════════════════════
+     ОЖИДАНИЕ ЗАГРУЗКИ ТАБЛИЦЫ
+     ════════════════════════════════════════════════════════════════ */
 
-  async function waitForTableStable() {
+  /**
+   * Ждёт появления таблицы с хотя бы одной строкой.
+   * Проверяет стабилизацию количества строк (3 одинаковых чтения по 500мс).
+   */
+  async function waitForTableReady() {
     let lastCount = 0;
     let stableRounds = 0;
 
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 30; i++) {
       const rows = document.querySelectorAll('table tbody tr');
-      if (rows.length > 0) {
-        if (rows.length === lastCount) {
+      const skuSpans = document.querySelectorAll('[data-widget="@products/list-ods/table/cell/sku-fbs/span"]');
+      const count = Math.max(rows.length, skuSpans.length);
+
+      if (count > 0) {
+        if (count === lastCount) {
           stableRounds++;
-          if (stableRounds >= 5) return;
+          if (stableRounds >= 3) return;
         } else {
           stableRounds = 0;
-          lastCount = rows.length;
+          lastCount = count;
         }
       }
       await sleep(500);
     }
+
     if (lastCount > 0) {
-      log(`Таблица: ${lastCount} строк (ожидание стабилизации истекло, продолжаю)`);
+      log(`Таблица: ${lastCount} строк (стабилизация по таймауту)`);
     } else {
-      log('Таблица не найдена');
+      log('⚠ Таблица не найдена после 15с ожидания');
     }
   }
 
-  /* ────── Пагинация с ожиданием обновления данных ────── */
+  /* ════════════════════════════════════════════════════════════════
+     ПАГИНАЦИЯ
+     ════════════════════════════════════════════════════════════════ */
 
   /**
-   * Определяет текущую активную страницу среди кнопок-цифр.
-   * Мульти-стратегия: атрибуты, CSS-классы, computed styles, disabled.
+   * Определяет текущую активную страницу из кнопок-цифр пагинации.
    */
   function findCurrentPageButton(numBtns) {
     if (numBtns.length === 0) return null;
 
-    // Стратегия 1: data-selected, aria-current, aria-pressed
+    // 1. Атрибуты data-selected/aria-current/aria-pressed
     for (const btn of numBtns) {
       if (btn.getAttribute('data-selected') === 'true') return btn;
       if (btn.getAttribute('aria-current') === 'true' || btn.getAttribute('aria-current') === 'page') return btn;
       if (btn.getAttribute('aria-pressed') === 'true') return btn;
     }
 
-    // Стратегия 2: CSS-классы с active/selected/current
+    // 2. CSS-класс с active/selected/current
     for (const btn of numBtns) {
       const cls = btn.className || '';
       if (/active|selected|current/i.test(cls) && !/inactive|unselected/i.test(cls)) return btn;
     }
 
-    // Стратегия 3: computed styles — fontWeight bold или уникальный background
-    const styles = numBtns.map(btn => ({
-      btn,
-      weight: parseInt(getComputedStyle(btn).fontWeight) || 400,
-      bg: getComputedStyle(btn).backgroundColor,
-      color: getComputedStyle(btn).color
-    }));
+    // 3. Computed style: bold или уникальный фон
+    const styles = numBtns.map(btn => {
+      const cs = getComputedStyle(btn);
+      return { btn, weight: parseInt(cs.fontWeight) || 400, bg: cs.backgroundColor };
+    });
 
     const boldBtns = styles.filter(s => s.weight >= 600);
-    const normalBtns = styles.filter(s => s.weight < 600);
-    if (boldBtns.length === 1 && normalBtns.length > 0) return boldBtns[0].btn;
+    if (boldBtns.length === 1) return boldBtns[0].btn;
 
     const bgCounts = {};
     styles.forEach(s => { bgCounts[s.bg] = (bgCounts[s.bg] || 0) + 1; });
     const uniqueBg = styles.filter(s => bgCounts[s.bg] === 1 && s.bg !== 'rgba(0, 0, 0, 0)' && s.bg !== 'transparent');
     if (uniqueBg.length === 1) return uniqueBg[0].btn;
 
-    // Стратегия 4: disabled = текущая страница
+    // 4. disabled
     for (const btn of numBtns) {
-      if (btn.disabled || btn.getAttribute('disabled') !== null) return btn;
+      if (btn.disabled) return btn;
     }
 
-    return numBtns[0]; // фоллбэк
+    return numBtns[0];
   }
 
+  /**
+   * Переход на следующую страницу. Возвращает true если удалось.
+   * Сначала скроллит страницу вниз до пагинации, чтобы кнопки были в DOM.
+   */
   async function goToNextPage() {
     const oldFirstSku = getFirstSkuOnPage();
+
+    // Скроллим до конца страницы чтобы пагинация была видна
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' });
+    await sleep(500);
+
+    // Собираем кнопки пагинации
     const table = document.querySelector('table');
     if (!table) return false;
-    const tableBottom = table.getBoundingClientRect().bottom;
 
-    // Собираем ВСЕ кликабельные элементы НИЖЕ таблицы (пагинация)
+    const tableRect = table.getBoundingClientRect();
+
+    // Все кликабельные элементы ниже таблицы (в viewport)
     const allClickable = [...document.querySelectorAll('button, a, [role="button"]')].filter(el => {
       const r = el.getBoundingClientRect();
-      return r.top > tableBottom - 30 && r.height > 0 && r.width > 0;
+      return r.top > tableRect.bottom - 50 && r.height > 0 && r.width > 0 && r.top < window.innerHeight + 100;
     });
 
     if (allClickable.length === 0) {
-      log('Кнопки пагинации не найдены под таблицей');
+      log('Кнопки пагинации не найдены');
       return false;
     }
 
-    // Кнопки-цифры
+    // Кнопки с цифрами
     const numBtns = allClickable.filter(b => /^\d+$/.test(b.textContent.trim()));
     const currentBtn = findCurrentPageButton(numBtns);
     const currentPage = currentBtn ? parseInt(currentBtn.textContent.trim()) : 0;
 
-    log(`Пагинация: ${numBtns.length} кнопок-цифр, ${allClickable.length} всего под таблицей, текущая стр. ${currentPage}`);
+    log(`Пагинация: ${numBtns.length} кнопок-цифр, текущая стр. ${currentPage}`);
 
     let clicked = false;
 
-    // Стратегия A: Кнопка с номером currentPage + 1
+    // A: Кнопка currentPage + 1
     if (!clicked && currentPage > 0) {
       const nextBtn = numBtns.find(b => parseInt(b.textContent.trim()) === currentPage + 1 && !b.disabled);
       if (nextBtn) {
-        log(`Клик: страница ${currentPage + 1}`);
+        log(`Клик: стр. ${currentPage + 1}`);
         nextBtn.click();
         clicked = true;
       }
     }
 
-    // Стратегия B: Кнопка-стрелка по aria-label
+    // B: aria-label next/следующая
     if (!clicked) {
       const nextArrow = allClickable.find(b =>
         !b.disabled && /next|следующ|вперед|вперёд/i.test(b.getAttribute('aria-label') || '')
       );
       if (nextArrow) {
-        log('Клик: стрелка «следующая» (aria-label)');
+        log('Клик: стрелка (aria-label)');
         nextArrow.click();
         clicked = true;
       }
     }
 
-    // Стратегия C: Текстовая стрелка (→ › » >)
+    // C: Текстовая стрелка › »
     if (!clicked) {
       const arrowBtn = allClickable.find(b =>
-        !b.disabled && ['→', '›', '»', '>'].includes(b.textContent.trim())
+        !b.disabled && /^[→›»>]$/.test(b.textContent.trim())
       );
       if (arrowBtn) {
         log('Клик: текстовая стрелка');
@@ -411,63 +477,72 @@
       }
     }
 
-    // Стратегия D: SVG-стрелка справа от последней цифры
+    // D: SVG-кнопка правее последней цифры
     if (!clicked && numBtns.length > 0) {
-      const lastNum = numBtns[numBtns.length - 1];
-      const lastRect = lastNum.getBoundingClientRect();
+      const lastRect = numBtns[numBtns.length - 1].getBoundingClientRect();
       const svgBtn = allClickable.find(b => {
         if (b.disabled || numBtns.includes(b)) return false;
         const r = b.getBoundingClientRect();
-        return r.left >= lastRect.right - 5 && b.querySelector('svg');
+        return r.left >= lastRect.right - 10 && b.querySelector('svg');
       });
       if (svgBtn) {
-        log('Клик: SVG-стрелка вперёд');
+        log('Клик: SVG-стрелка');
         svgBtn.click();
         clicked = true;
       }
     }
 
-    // Стратегия E: Следующая кнопка-цифра в DOM-порядке
+    // E: Следующая цифра в DOM-порядке
     if (!clicked && currentBtn) {
       const idx = numBtns.indexOf(currentBtn);
       if (idx >= 0 && idx < numBtns.length - 1 && !numBtns[idx + 1].disabled) {
-        log(`Клик: следующая цифра ${numBtns[idx + 1].textContent.trim()}`);
+        log(`Клик: цифра ${numBtns[idx + 1].textContent.trim()}`);
         numBtns[idx + 1].click();
         clicked = true;
       }
     }
 
-    if (!clicked) return false;
+    if (!clicked) {
+      log('Не удалось найти кнопку следующей страницы');
+      return false;
+    }
 
+    // Скроллим наверх и ждём обновления
+    window.scrollTo({ top: 0, behavior: 'instant' });
     await waitForTableUpdate(oldFirstSku);
     return true;
   }
 
-  /** Возвращает SKU первой строки для детекции смены страницы */
+  /**
+   * SKU первой строки — для детекции смены страницы.
+   */
   function getFirstSkuOnPage() {
-    const span = document.querySelector('table tbody tr [data-widget="@products/list-ods/table/cell/sku-fbs/span"]');
+    const span = document.querySelector('[data-widget="@products/list-ods/table/cell/sku-fbs/span"]');
     if (span) {
-      const m = span.textContent.trim().match(/SKU\s+(\d{5,})/);
+      const m = span.textContent.trim().match(/(\d{5,})/);
       if (m) return m[1];
     }
-    // Фоллбэк: текст первой ячейки
-    const firstTd = document.querySelector('table tbody tr td:nth-child(2)');
-    if (firstTd) return firstTd.textContent.trim().substring(0, 30);
+    const link = document.querySelector('a[data-widget="products-table-row-title-link"]');
+    if (link) {
+      const m = (link.getAttribute('href') || '').match(/\/product\/(\d{5,})/);
+      if (m) return m[1];
+    }
     return null;
   }
 
-  /** Ждём пока первый SKU на странице изменится (макс 10с) */
+  /**
+   * Ждём пока таблица обновится после клика пагинации (новый первый SKU).
+   */
   async function waitForTableUpdate(oldFirstSku) {
     for (let i = 0; i < 20; i++) {
       await sleep(500);
       const newFirst = getFirstSkuOnPage();
       if (newFirst && newFirst !== oldFirstSku) return;
-      if (!newFirst && i > 2) continue;
     }
     log('Ожидание обновления таблицы истекло (10с)');
   }
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  log('Batch products collector загружен');
+  log('Batch collector v3.6 загружен');
 })();

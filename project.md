@@ -1,7 +1,7 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-16 | Версия: 3.5.0
+> Последнее обновление: 2026-03-16 | Версия: 3.6.0
 
 ## Архитектура
 
@@ -19,7 +19,7 @@ Chrome Extension (Manifest V3)
 ## Файлы и их роли
 
 ### manifest.json
-- **Manifest V3**, version `3.5.0`
+- **Manifest V3**, version `3.6.0`
 - Permissions: `storage`, `alarms`, `notifications`, `activeTab`, `scripting`, `tabs`
 - Host: `https://seller.ozon.ru/*`, `https://www.ozon.ru/*`
 - Content scripts инжектятся программно через `chrome.scripting.executeScript`
@@ -93,7 +93,7 @@ Chrome Extension (Manifest V3)
 - **Принимает:** `startDuplicateScan { skus[], currentIndex, config }` + `stopDuplicates` + `pauseDuplicates` + `resumeDuplicates`
 - **Отправляет:** `duplicatePageResult { sku, competitors[], error?, pageIndex, totalSkus }` + `techLog`
 
-### content/content-batch-products.js (~473 строк) — BATCH КОЛЛЕКТОР SKU (v3.5.0 rewrite)
+### content/content-batch-products.js (~549 строк) — BATCH КОЛЛЕКТОР SKU (v3.6.0 rewrite)
 Работает на `seller.ozon.ru/app/products`. IIFE с тройной защитой от повторной инъекции.
 
 #### Защита от двойной инъекции:
@@ -106,17 +106,26 @@ Chrome Extension (Manifest V3)
 | Функция | Описание |
 |---------|----------|
 | `collectAllSkus()` | Главный цикл: scroll+collect по страницам → пагинация → отправка |
-| `scrollAndCollectPageSkus()` | **Инкрементальная прокрутка** контейнера: 300мс между шагами, сбор строк на каждой позиции |
-| `findScrollContainer()` | Поиск прокручиваемого контейнера вверх по DOM (overflow-y: auto/scroll) |
-| `parseVisibleRows(statusIdx, seenSkus, seenRowKeys)` | Парсинг видимых строк с дедупликацией по SKU + текстовому ключу |
+| `scrollPageAndCollect()` | **Двухфазный сбор**: Фаза 1 — direct DOM query; Фаза 2 — инкрементальная прокрутка window |
+| `findScrollableElement(table)` | Поиск прокручиваемого контейнера; возвращает null → сигнал использовать window |
+| `collectVisibleSkus(statusIdx, seenSkus)` | Сбор SKU из видимых строк, дедупликация по SKU |
+| `getExpectedCountFromTabs()` | Считывание ожидаемого кол-ва из badge вкладки «Все» (`.rc8110-a0`) |
 | `getStatusColumnIndex()` | Поиск колонки «Статус» в заголовке таблицы |
 | `isRowActive(row, statusIdx)` | Фильтрация: пропускает «Не продается», «Убран из продажи», «Заблокирован» |
-| `goToNextPage(tableRect)` | 5 стратегий пагинации без зависимости от контейнера |
-| `waitForTableStable()` | Ожидание стабилизации DOM (5 раундов по 500мс) |
+| `extractSkuFromRow(row)` | 4 стратегии извлечения SKU из строки таблицы |
+| `findCurrentPageButton(numBtns)` | Определение активной страницы (4 стратегии: атрибуты, CSS, computedStyle, disabled) |
+| `goToNextPage()` | Скролл до конца → 5 стратегий пагинации |
+| `waitForTableReady()` | Ожидание стабилизации DOM (3 стабильных чтения по 500мс) |
 | `waitForTableUpdate(oldFirstSku)` | Ожидание обновления таблицы после клика пагинации |
 
+#### Виртуальный скроллинг (v3.6.0):
+Таблица OZON рендерит ~36-72 строк на страницу, но в DOM одновременно видны ~3-10 (виртуальный скроллинг привязан к window, НЕ к контейнеру). `scrollPageAndCollect()` использует абстрактный слой scroll-операций:
+- `getScrollTop/getScrollHeight/getViewHeight/doScroll` — closures, работающие с window или контейнером
+- Шаг прокрутки: `max(200, viewHeight * 0.7)`
+- Остановка: 6 шагов без новых строк или достижение конца
+
 #### 4 стратегии извлечения SKU из строки:
-1. **data-widget spans** — `[data-widget="@products/list-ods/table/cell/sku-fbs/span"]` → regex `SKU\s+(\d{5,})`
+1. **data-widget spans** — `[data-widget="@products/list-ods/table/cell/sku-fbs/span"]` → regex `(\d{5,})`
 2. **Product links** — `a[data-widget="products-table-row-title-link"]` → href `/product/(\d{5,})`
 3. **Barcode cells** — `[data-style="text"]` → regex `OZN(\d{5,})`
 4. **Full text** — `textContent.match(/SKU\s+(\d{5,})/)` (вся строка)
@@ -127,9 +136,6 @@ Chrome Extension (Manifest V3)
 3. **Текстовые стрелки** `›` или `»`
 4. **SVG-стрелка** правее последней нумерованной кнопки
 5. **Следующая по DOM** нумерованная кнопка после текущей
-
-#### Виртуальный скроллинг:
-Таблица OZON рендерит ~36 строк на страницу, но в DOM одновременно видны ~9-10. `scrollAndCollectPageSkus()` прокручивает контейнер инкрементально (шаг = высота контейнера - 50px) и собирает строки на каждой позиции скролла, дедуплицируя по SKU и текстовому ключу.
 
 #### Протокол сообщений:
 - **Принимает:** `collectProductSkus`
@@ -195,7 +201,7 @@ Chrome Extension (Manifest V3)
 - **Настройки**: вайтлист (SKU/продавец/ИНН), экспорт/импорт данных
 - **Бренды (legacy)**: deprecated notice + полный старый функционал
 - **Инфо**: 3 шага поиска дубликатов + советы + совместимость
-- Footer: `v3.5.0 by firayzer`
+- Footer: `v3.6.0 by firayzer`
 - Scripts: `libs/xlsx-reader.js` + `popup.js`
 
 ### popup/popup.js (~1244 строк)
@@ -273,7 +279,7 @@ service-worker.js → chrome.tabs.sendMessage → content-batch-products.js (col
 content-batch-products.js → chrome.runtime.sendMessage → service-worker.js (batchSkusCollected)
 ```
 
-## Архитектура поиска дубликатов (v3.5.0)
+## Архитектура поиска дубликатов (v3.6.0)
 
 ```
 [Popup] 4 стратегии запуска:
@@ -306,7 +312,7 @@ content-batch-products.js → chrome.runtime.sendMessage → service-worker.js (
   4. Поиск по виджетам
 ```
 
-## Счётчики строк (актуально для v3.5.0)
+## Счётчики строк (актуально для v3.6.0)
 
 | Файл | Строк |
 |------|-------|
@@ -317,11 +323,11 @@ content-batch-products.js → chrome.runtime.sendMessage → service-worker.js (
 | background/service-worker.js | ~732 |
 | content/content-duplicates.js | ~641 |
 | popup/popup.html | ~534 |
-| content/content-batch-products.js | ~473 |
+| content/content-batch-products.js | ~549 |
 | libs/xlsx-reader.js | ~237 |
 | content/content.css | ~191 |
 | options/options.html | 78 |
-| **Итого** | **~7989** |
+| **Итого** | **~8065** |
 
 ## Известные особенности
 

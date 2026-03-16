@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.6.0] - 2026-03-16
+
+### Fixed
+- **Пакетный сбор собирал неполные данные из-за неверного скроллинга** — анализ реального HTML страницы «Список товаров» показал: виртуальный скроллинг привязан к `window.scrollTo`, а не к контейнеру с `overflow-y`. Старый `findScrollContainer()` находил `document.documentElement` как фоллбэк, но `scrollTarget.scrollTop` работал некорректно для window. Полная перезапись `content/content-batch-products.js` v3.5.0 → v3.6.0
+
+### Changed
+- **`scrollPageAndCollect()`** — заменяет `scrollAndCollectPageSkus()`. Двухфазный сбор: Фаза 1 — прямой DOM-запрос (если все строки уже в DOM); Фаза 2 — инкрементальная прокрутка `window.scrollTo()` с абстрактным слоем scroll-операций через closures (`getScrollTop/getScrollHeight/getViewHeight/doScroll`)
+- **`findScrollableElement(table)`** — заменяет `findScrollContainer()`. Возвращает `null` когда нет контейнера с overflow → сигнал использовать window
+- **`collectVisibleSkus(statusIdx, seenSkus)`** — заменяет `parseVisibleRows()`. Упрощённая дедупликация только по SKU (без текстового ключа строки)
+- **`getExpectedCountFromTabs()`** — NEW: считывает ожидаемое количество товаров из badge вкладки «Все» (`.rc8110-a0`), досрочное завершение при достижении
+- **`goToNextPage()`** — скроллит страницу до конца перед поиском кнопок пагинации (кнопки могут быть вне viewport)
+- **`waitForTableReady()`** — заменяет `waitForTableStable()`. Учитывает и `table tbody tr` и `data-widget` SKU-spans
+- **Диагностика** — расширенное логирование: тип скроллинга (window/container), scrollHeight, viewHeight, позиция, количество шагов без новых строк
+- **Version** — 3.5.0 → 3.6.0
+
 ## [3.5.0] - 2026-03-16
 
 ### Fixed
