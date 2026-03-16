@@ -1123,6 +1123,27 @@ a:hover {
   padding: 6px;
 }
 
+/* Copy SKU button (inline) */
+.btn-copy-sku {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 3px;
+  vertical-align: middle;
+  transition: background 0.15s;
+}
+
+.btn-copy-sku:hover {
+  background: #e3f2fd;
+}
+
 /* Pause button */
 .btn--pause {
   background: #ff9800;

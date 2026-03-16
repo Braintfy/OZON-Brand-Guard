@@ -82,6 +82,18 @@
         </div>
       </div>
 
+      <!-- Resume saved session -->
+      <div class="card" id="dupResumeCard" style="display:none">
+        <div class="notice notice--info" style="margin-bottom:8px">
+          <span class="notice__icon">⏸</span>
+          <span class="notice__text" id="dupResumeInfo">Есть приостановленная сессия</span>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn--primary btn--full" id="btnResumeSaved">▶ Продолжить сканирование</button>
+          <button class="btn btn--danger btn--small" id="btnDiscardSaved">✕</button>
+        </div>
+      </div>
+
       <!-- Progress -->
       <div class="card" id="dupProgressCard" style="display:none">
         <h3>Прогресс</h3>
@@ -495,7 +507,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>OZON Brand Guard v3.3.0</span>
+      <span>OZON Brand Guard v3.4.0</span>
       <a href="https://t.me/firayzer" target="_blank">by firayzer</a>
     </footer>
   </div>

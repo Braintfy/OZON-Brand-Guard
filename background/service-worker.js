@@ -80,6 +80,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       stopDuplicateSearch();
       break;
 
+    case 'resumeFromSaved':
+      resumeFromSavedSession().then(r => sendResponse(r));
+      return true;
+
+    case 'getPausedSession':
+      loadPausedSession().then(s => sendResponse(s));
+      return true;
+
     case 'getHistory':
       loadDuplicateHistory().then(h => sendResponse(h));
       return true;
@@ -242,7 +250,7 @@ async function navigateInjectStart(url, scriptFile, action, config) {
 
 async function injectAndStart(tabId, scriptFile, action, config) {
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: [scriptFile] });
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: false }, files: [scriptFile] });
     await chrome.scripting.insertCSS({ target: { tabId }, files: ['content/content.css'] });
   } catch (e) { console.log('[OBG] inject:', e.message); }
   await wait(500);
@@ -429,7 +437,7 @@ async function processDuplicateSku(index) {
 
     // Inject content script
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content-duplicates.js'] });
+      await chrome.scripting.executeScript({ target: { tabId, allFrames: false }, files: ['content/content-duplicates.js'] });
     } catch (e) { console.log('[OBG] inject duplicates:', e.message); }
     await wait(500);
 
@@ -486,6 +494,7 @@ function handleDuplicatePageResult(msg) {
     // Check if paused
     if (isPaused) {
       duplicateScanState.currentIndex = nextIndex;
+      savePausedSession();
       relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ⏸ Пауза. Обработано ${processed}/${total}, найдено ${duplicateScanState.results.length} дубликатов` });
       relayToExtensionPages({ action: 'duplicateScanPaused', results: duplicateScanState.results, processed, total });
       return;
@@ -496,6 +505,7 @@ function handleDuplicatePageResult(msg) {
     // All done
     isRunning = false;
     isPaused = false;
+    clearPausedSession();
     const totalFound = duplicateScanState.results.length;
     relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ✅ Готово! Обработано ${total} SKU, найдено ${totalFound} дубликатов` });
     relayToExtensionPages({ action: 'doneDuplicates', results: duplicateScanState.results });
@@ -508,6 +518,8 @@ function handleDuplicatePageResult(msg) {
 function pauseDuplicateSearch() {
   if (!duplicateScanState || !isRunning) return;
   isPaused = true;
+  // Сохраняем состояние паузы в storage для восстановления после закрытия popup
+  savePausedSession();
   relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ⏸ Пауза запрошена, ожидаю завершения текущего SKU...` });
   console.log('[OBG] Duplicate search paused');
 }
@@ -515,11 +527,41 @@ function pauseDuplicateSearch() {
 function resumeDuplicateSearch() {
   if (!duplicateScanState || !isPaused) return;
   isPaused = false;
+  clearPausedSession();
   const nextIndex = duplicateScanState.currentIndex;
   relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ▶ Возобновление с SKU ${nextIndex + 1}/${duplicateScanState.skus.length}...` });
   relayToExtensionPages({ action: 'duplicateScanResumed' });
   console.log('[OBG] Duplicate search resumed from index', nextIndex);
   processDuplicateSku(nextIndex);
+}
+
+/** Возобновление из сохранённой сессии (после закрытия popup или перезагрузки SW) */
+async function resumeFromSavedSession() {
+  const saved = await loadPausedSession();
+  if (!saved || !saved.skus || saved.skus.length === 0) return { ok: false, error: 'Нет сохранённой сессии' };
+
+  if (isRunning) return { ok: false, error: 'Сканирование уже запущено' };
+
+  isRunning = true;
+  isPaused = false;
+  duplicateScanState = {
+    skus: saved.skus,
+    currentIndex: saved.currentIndex,
+    results: saved.results || [],
+    config: saved.config || {},
+    tabId: null,
+    strategy: saved.strategy || 'manual'
+  };
+  latestDuplicateStats = { total: saved.skus.length, processed: saved.currentIndex, found: (saved.results || []).length };
+
+  clearPausedSession();
+  const nextIndex = saved.currentIndex;
+  relayToExtensionPages({ action: 'techLog', text: `[Дубликаты] ▶ Возобновление сохранённой сессии с SKU ${nextIndex + 1}/${saved.skus.length}...` });
+  relayToExtensionPages({ action: 'updateDuplicateStats', stats: latestDuplicateStats });
+  relayToExtensionPages({ action: 'duplicateScanResumed' });
+  console.log('[OBG] Resuming saved session from index', nextIndex);
+  processDuplicateSku(nextIndex);
+  return { ok: true, total: saved.skus.length, from: nextIndex };
 }
 
 function stopDuplicateSearch() {
@@ -535,8 +577,34 @@ function stopDuplicateSearch() {
   isRunning = false;
   isPaused = false;
   latestDuplicateStats = null;
+  clearPausedSession();
   relayToExtensionPages({ action: 'doneDuplicates', results: partialResults });
   duplicateScanState = null;
+}
+
+// ── Paused session persistence ──
+function savePausedSession() {
+  if (!duplicateScanState) return;
+  const session = {
+    skus: duplicateScanState.skus,
+    currentIndex: duplicateScanState.currentIndex,
+    results: duplicateScanState.results,
+    config: duplicateScanState.config,
+    strategy: duplicateScanState.strategy,
+    date: new Date().toISOString()
+  };
+  chrome.storage.local.set({ obgPausedSession: session });
+  console.log('[OBG] Saved paused session at index', session.currentIndex);
+}
+
+function clearPausedSession() {
+  chrome.storage.local.remove('obgPausedSession');
+}
+
+function loadPausedSession() {
+  return new Promise(resolve => {
+    chrome.storage.local.get('obgPausedSession', r => resolve(r.obgPausedSession || null));
+  });
 }
 
 // ── Duplicate search history (last 10 sessions) ──
@@ -625,7 +693,7 @@ async function launchBatchFromProducts(config) {
     // Inject batch collector script
     relayToExtensionPages({ action: 'techLog', text: `[Пакетный] 🔧 Внедряю скрипт сбора SKU...` });
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content-batch-products.js'] });
+      await chrome.scripting.executeScript({ target: { tabId, allFrames: false }, files: ['content/content-batch-products.js'] });
     } catch (e) { console.log('[OBG] inject batch:', e.message); }
     await wait(500);
 

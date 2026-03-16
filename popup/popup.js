@@ -49,12 +49,32 @@
     renderAll();
     bindEvents();
     updateStatusFromBackground();
+    checkPausedSession();
   }
 
   // ── History persistence ──
   function loadHistory() {
     return new Promise(resolve => {
       safeSendRuntime({ action: 'getHistory' }, h => resolve(h || []));
+    });
+  }
+
+  // ── Paused session check ──
+  function checkPausedSession() {
+    safeSendRuntime({ action: 'getPausedSession' }, (session) => {
+      const card = document.getElementById('dupResumeCard');
+      if (!card) return;
+      if (!session || !session.skus || session.skus.length === 0) {
+        card.style.display = 'none';
+        return;
+      }
+      const processed = session.currentIndex || 0;
+      const total = session.skus.length;
+      const found = (session.results || []).length;
+      const d = new Date(session.date);
+      const dateStr = d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      document.getElementById('dupResumeInfo').textContent = `Пауза (${dateStr}): обработано ${processed}/${total} SKU, найдено ${found} дубликатов`;
+      card.style.display = 'block';
     });
   }
 
@@ -225,6 +245,7 @@
         const d = document.createElement('div');
         d.className = 'dup-item';
         d.innerHTML = `<span class="dup-item__sku">${esc(item.sku)}</span>
+          <button class="btn-copy-sku" data-sku="${esc(item.sku)}" title="Копировать SKU">📋</button>
           <span class="dup-item__price">${item.price ? item.price + ' ₽' : '—'}</span>
           <a href="${esc(item.url)}" target="_blank" class="dup-item__link" title="${esc(item.name)}">→</a>`;
         itemsDiv.appendChild(d);
@@ -238,6 +259,15 @@
       group.appendChild(itemsDiv);
       list.appendChild(group);
     }
+    // Обработчики копирования SKU в быстрых результатах
+    list.querySelectorAll('.btn-copy-sku').forEach(btn => {
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(btn.dataset.sku).then(() => {
+          btn.textContent = '✓';
+          setTimeout(() => btn.textContent = '📋', 1000);
+        });
+      });
+    });
   }
 
   function renderDuplicateReport() {
@@ -263,12 +293,21 @@
       const tr = document.createElement('tr');
       const sellerUrl = item.sellerUrl || (item.seller ? `https://www.ozon.ru/seller/${encodeURIComponent(item.seller)}/` : '');
       tr.innerHTML = `<td>${esc(item.sourceSku || '')}</td>
-        <td><strong>${esc(item.sku || '')}</strong></td>
+        <td><strong>${esc(item.sku || '')}</strong> <button class="btn-copy-sku" data-sku="${esc(item.sku || '')}" title="Копировать SKU">📋</button></td>
         <td>${item.price ? esc(item.price) + ' ₽' : '—'}</td>
         <td>${esc(item.seller || '—')}</td>
         <td>${sellerUrl ? `<a href="${esc(sellerUrl)}" target="_blank" style="color:#005bff">Магазин</a>` : '—'}</td>
         <td><a href="${esc(item.url || '')}" target="_blank" style="color:#005bff">Товар</a></td>`;
       tbody.appendChild(tr);
+    });
+    // Обработчики копирования SKU
+    tbody.querySelectorAll('.btn-copy-sku').forEach(btn => {
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(btn.dataset.sku).then(() => {
+          btn.textContent = '✓';
+          setTimeout(() => btn.textContent = '📋', 1000);
+        });
+      });
     });
 
     renderSellerGroups();
@@ -632,6 +671,27 @@
     document.getElementById('dupDelayRange').addEventListener('change', async (e) => { config.duplicateDelay = parseInt(e.target.value, 10); await saveConfig(); });
     document.getElementById('skuInput').addEventListener('change', async (e) => { config.savedSkuInput = e.target.value; await saveConfig(); });
 
+    // Resume saved paused session
+    document.getElementById('btnResumeSaved').addEventListener('click', () => {
+      safeSendRuntime({ action: 'resumeFromSaved' }, (r) => {
+        if (r && r.ok) {
+          document.getElementById('dupResumeCard').style.display = 'none';
+          document.getElementById('btnStartDuplicates').style.display = 'none';
+          document.getElementById('btnPauseDuplicates').style.display = 'flex';
+          document.getElementById('btnStopDuplicates').style.display = 'flex';
+          document.getElementById('dupProgressCard').style.display = 'block';
+          scanPaused = false;
+          document.getElementById('btnPauseDuplicates').textContent = '⏸ Пауза';
+          document.getElementById('btnPauseDuplicates').classList.remove('btn--resume');
+          setRunningState(true);
+        }
+      });
+    });
+    document.getElementById('btnDiscardSaved').addEventListener('click', () => {
+      safeSendRuntime({ action: 'stopDuplicates' });
+      document.getElementById('dupResumeCard').style.display = 'none';
+    });
+
     // Start duplicate search (handles all 3 strategies)
     document.getElementById('btnStartDuplicates').addEventListener('click', async () => {
       techLogLines = []; saveTechLogs();
@@ -657,6 +717,7 @@
       document.getElementById('btnPauseDuplicates').style.display = 'flex';
       document.getElementById('btnStopDuplicates').style.display = 'flex';
       document.getElementById('dupProgressCard').style.display = 'block';
+      document.getElementById('dupResumeCard').style.display = 'none';
       scanPaused = false;
       document.getElementById('btnPauseDuplicates').textContent = '⏸ Пауза';
       document.getElementById('btnPauseDuplicates').classList.remove('btn--resume');

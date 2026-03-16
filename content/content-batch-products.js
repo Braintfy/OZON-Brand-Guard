@@ -1,4 +1,4 @@
-// OZON Brand Guard — Batch Products SKU Collector v3.2.0
+// OZON Brand Guard — Batch Products SKU Collector v3.4.0
 // Работает на seller.ozon.ru/app/products*
 // Парсит таблицу товаров продавца и извлекает SKU для пакетного поиска дубликатов
 // Фильтрует по статусу: пропускает «Не продается» (убранные из продажи)
@@ -7,6 +7,9 @@
 (function () {
   'use strict';
 
+  // Двойная защита: DOM-guard + window-flag
+  if (window.__obgBatchLoaded) return;
+  window.__obgBatchLoaded = true;
   if (document.getElementById('__obg-batch-guard')) return;
   const guard = document.createElement('div');
   guard.id = '__obg-batch-guard';
@@ -152,7 +155,7 @@
       if (rows.length > 0) {
         if (rows.length === lastCount) {
           stableRounds++;
-          if (stableRounds >= 3) return; // кол-во строк не меняется 1.5с — загрузка завершена
+          if (stableRounds >= 5) return; // кол-во строк не меняется 2.5с — загрузка завершена
         } else {
           stableRounds = 0;
           lastCount = rows.length;
@@ -169,45 +172,166 @@
 
   /* ────── Пагинация с ожиданием обновления данных ────── */
 
-  async function goToNextPage() {
-    // Запоминаем текущие SKU для детекции обновления
-    const oldFirstSku = getFirstSkuOnPage();
+  /**
+   * Находит контейнер пагинации — ищем элемент ПОД таблицей,
+   * чтобы не путать с табами «Все / В продаже / ...» над таблицей.
+   */
+  function findPaginationContainer() {
+    const table = document.querySelector('table');
+    if (!table) return null;
+    const tableRect = table.getBoundingClientRect();
 
-    // Look for pagination buttons
-    const paginationBtns = document.querySelectorAll('ul li button, nav button, [data-widget*="pagination"] button');
-    let currentFound = false;
+    // Ищем все контейнеры с кнопками-цифрами ниже таблицы
+    const candidates = document.querySelectorAll('ul, nav, div[class*="pagination"], div[class*="Pagination"], div[class*="pager"]');
+    for (const el of candidates) {
+      const rect = el.getBoundingClientRect();
+      // Контейнер должен быть ниже таблицы (или на уровне её нижнего края)
+      if (rect.top < tableRect.bottom - 20) continue;
+      // Должен содержать хотя бы 2 кнопки с цифрами
+      const numBtns = [...el.querySelectorAll('button, a')].filter(b => /^\d+$/.test(b.textContent.trim()));
+      if (numBtns.length >= 2) return el;
+    }
+
+    // Фоллбэк: ищем любой элемент с кнопками-цифрами ниже таблицы
+    const allButtons = [...document.querySelectorAll('button, a')];
+    const numberedBtns = allButtons.filter(b => {
+      const t = b.textContent.trim();
+      if (!/^\d+$/.test(t)) return false;
+      const rect = b.getBoundingClientRect();
+      return rect.top > tableRect.bottom - 20;
+    });
+    if (numberedBtns.length >= 2) {
+      return numberedBtns[0].closest('ul') || numberedBtns[0].closest('nav') || numberedBtns[0].parentElement;
+    }
+
+    return null;
+  }
+
+  /**
+   * Определяет текущую активную страницу среди кнопок-цифр.
+   * Использует несколько стратегий: атрибуты, CSS-классы, computed styles.
+   */
+  function findCurrentPageButton(container) {
+    if (!container) return null;
+    const numBtns = [...container.querySelectorAll('button, a')].filter(b => /^\d+$/.test(b.textContent.trim()));
+    if (numBtns.length === 0) return null;
+
+    // Стратегия 1: data-selected, aria-current, aria-pressed
+    for (const btn of numBtns) {
+      if (btn.getAttribute('data-selected') === 'true') return btn;
+      if (btn.getAttribute('aria-current') === 'true' || btn.getAttribute('aria-current') === 'page') return btn;
+      if (btn.getAttribute('aria-pressed') === 'true') return btn;
+    }
+
+    // Стратегия 2: CSS-классы с active/selected/current
+    for (const btn of numBtns) {
+      const cls = btn.className || '';
+      if (/active|selected|current/i.test(cls) && !/inactive|unselected/i.test(cls)) return btn;
+    }
+
+    // Стратегия 3: computed styles — fontWeight bold или другой background
+    const styles = numBtns.map(btn => ({
+      btn,
+      weight: parseInt(getComputedStyle(btn).fontWeight) || 400,
+      bg: getComputedStyle(btn).backgroundColor,
+      color: getComputedStyle(btn).color
+    }));
+
+    // Ищем кнопку с жирным шрифтом (700+), если остальные обычные
+    const boldBtns = styles.filter(s => s.weight >= 600);
+    const normalBtns = styles.filter(s => s.weight < 600);
+    if (boldBtns.length === 1 && normalBtns.length > 0) return boldBtns[0].btn;
+
+    // Ищем кнопку с уникальным background-color
+    const bgCounts = {};
+    styles.forEach(s => { bgCounts[s.bg] = (bgCounts[s.bg] || 0) + 1; });
+    const uniqueBg = styles.filter(s => bgCounts[s.bg] === 1 && s.bg !== 'rgba(0, 0, 0, 0)' && s.bg !== 'transparent');
+    if (uniqueBg.length === 1) return uniqueBg[0].btn;
+
+    // Стратегия 4: disabled кнопка = текущая страница (некоторые UI-библиотеки)
+    for (const btn of numBtns) {
+      if (btn.disabled || btn.getAttribute('disabled') !== null) return btn;
+    }
+
+    // Фоллбэк: считаем что первая кнопка = текущая (для первой загрузки)
+    log('⚠ Не удалось определить активную страницу, пробую первую кнопку');
+    return numBtns[0];
+  }
+
+  async function goToNextPage() {
+    const oldFirstSku = getFirstSkuOnPage();
+    const container = findPaginationContainer();
+
+    if (!container) {
+      log('Пагинация не найдена — возможно все товары на одной странице');
+      return false;
+    }
+
+    const numBtns = [...container.querySelectorAll('button, a')].filter(b => /^\d+$/.test(b.textContent.trim()));
+    const currentBtn = findCurrentPageButton(container);
+    const currentPage = currentBtn ? parseInt(currentBtn.textContent.trim()) : 0;
+
+    log(`Пагинация: ${numBtns.length} кнопок, текущая стр. ${currentPage}`);
+
     let clicked = false;
 
-    for (const btn of paginationBtns) {
-      if (btn.getAttribute('data-selected') === 'true' || btn.getAttribute('aria-current') === 'true') {
-        currentFound = true;
-        continue;
+    // Стратегия A: Кнопка с номером currentPage + 1
+    if (currentPage > 0) {
+      const nextPageNum = currentPage + 1;
+      const nextBtn = numBtns.find(b => parseInt(b.textContent.trim()) === nextPageNum);
+      if (nextBtn && !nextBtn.disabled) {
+        log(`Клик по кнопке страницы ${nextPageNum}`);
+        nextBtn.click();
+        clicked = true;
       }
-      if (currentFound && !btn.disabled) {
+    }
+
+    // Стратегия B: Кнопка-стрелка «→» / «›» / SVG arrow / aria-label next
+    if (!clicked) {
+      const allBtns = [...container.querySelectorAll('button, a')];
+      for (const btn of allBtns) {
+        if (btn.disabled) continue;
         const text = btn.textContent.trim();
-        if (/^\d+$/.test(text) || text === '→' || text === '›') {
+        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+
+        // Текстовые стрелки
+        if (['→', '›', '»', '>', 'next', 'далее'].includes(text.toLowerCase()) || /next|следующ|вперед|вперёд/i.test(label)) {
           btn.click();
           clicked = true;
+          log('Клик по кнопке-стрелке «вперёд»');
           break;
+        }
+
+        // SVG-стрелка (кнопка без текста, содержит SVG)
+        if (!text && btn.querySelector('svg') && !label.includes('prev') && !label.includes('назад')) {
+          // Определяем направление: правая стрелка обычно ПОСЛЕ последней цифры
+          const btnRect = btn.getBoundingClientRect();
+          const lastNum = numBtns[numBtns.length - 1];
+          if (lastNum && btnRect.left > lastNum.getBoundingClientRect().left) {
+            btn.click();
+            clicked = true;
+            log('Клик по SVG-стрелке вперёд');
+            break;
+          }
         }
       }
     }
 
-    // Try "next" arrow button
-    if (!clicked) {
-      const nextBtns = document.querySelectorAll('button[aria-label*="next"], button[aria-label*="следующ"]');
-      for (const btn of nextBtns) {
-        if (!btn.disabled) {
-          btn.click();
+    // Стратегия C: Следующая кнопка-цифра после текущей в DOM-порядке
+    if (!clicked && currentBtn) {
+      const currentIdx = numBtns.indexOf(currentBtn);
+      if (currentIdx >= 0 && currentIdx < numBtns.length - 1) {
+        const nextBtn = numBtns[currentIdx + 1];
+        if (!nextBtn.disabled) {
+          log(`Клик по следующей кнопке: страница ${nextBtn.textContent.trim()}`);
+          nextBtn.click();
           clicked = true;
-          break;
         }
       }
     }
 
     if (!clicked) return false;
 
-    // Ждём пока таблица обновится (новые данные отличаются от старых)
     await waitForTableUpdate(oldFirstSku);
     return true;
   }
