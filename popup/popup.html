@@ -43,6 +43,7 @@
           <button class="mode-switch__btn mode-switch__btn--active" data-value="manual">� Ручной ввод SKU</button>
           <button class="mode-switch__btn" data-value="current">🌐 Текущая страница товара</button>
           <button class="mode-switch__btn" data-value="batch">📦 Пакетный сбор (все мои товары)</button>
+          <button class="mode-switch__btn" data-value="file">📄 Проверка из таблицы</button>
         </div>
       </div>
 
@@ -63,6 +64,21 @@
       <div class="card" id="strategyBatch" style="display:none">
         <h3>Пакетный сбор</h3>
         <p class="hint">Расширение откроет <strong>seller.ozon.ru/app/products</strong>, соберёт все SKU ваших товаров из таблицы и по каждому найдёт дубликаты. Поддерживает пагинацию.</p>
+      </div>
+
+      <!-- File import strategy -->
+      <div class="card" id="strategyFile" style="display:none">
+        <h3>Проверка из таблицы</h3>
+        <p class="hint">Загрузите файл <strong>«Цены товаров»</strong> (.xlsx) из раздела <em>Шаблоны → Цены товаров</em> в seller.ozon.ru. Расширение извлечёт все SKU и запустит поиск дубликатов.</p>
+        <div class="file-upload" style="margin-top:8px">
+          <input type="file" id="xlsxFileInput" accept=".xlsx" style="display:none">
+          <button class="btn btn--secondary" id="btnSelectXlsx">Выбрать файл .xlsx</button>
+          <span class="file-name" id="xlsxFileName">Файл не выбран</span>
+        </div>
+        <div id="xlsxFileInfo" class="notice notice--info" style="display:none;margin-top:8px">
+          <span class="notice__icon">📊</span>
+          <span class="notice__text" id="xlsxFileInfoText"></span>
+        </div>
       </div>
 
       <!-- Shared controls -->
@@ -507,11 +523,12 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>OZON Brand Guard v3.4.0</span>
+      <span>OZON Brand Guard v3.5.0</span>
       <a href="https://t.me/firayzer" target="_blank">by firayzer</a>
     </footer>
   </div>
 
+  <script src="../libs/xlsx-reader.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

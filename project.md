@@ -1,7 +1,7 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-15 | Версия: 3.1.1
+> Последнее обновление: 2026-03-16 | Версия: 3.5.0
 
 ## Архитектура
 
@@ -10,6 +10,7 @@ Chrome Extension (Manifest V3)
 ├── popup/          — UI расширения (5 вкладок: Дубликаты, Отчёт, Настройки, Бренды, Инфо)
 ├── content/        — Content scripts (4 скрипта: duplicates, batch-products, sellers, products)
 ├── background/     — Service Worker (планировщик, логи, relay, навигация дубликатов)
+├── libs/           — Библиотеки (xlsx-reader.js — парсер XLSX для импорта SKU)
 ├── options/        — Страница расширенных настроек (статичная)
 ├── assets/         — Иконки (SVG щит + PNG 16/48/128 + generate-icons.html)
 └── _locales/       — Локализация (ru, en)
@@ -18,7 +19,7 @@ Chrome Extension (Manifest V3)
 ## Файлы и их роли
 
 ### manifest.json
-- **Manifest V3**, version `3.1.1`
+- **Manifest V3**, version `3.5.0`
 - Permissions: `storage`, `alarms`, `notifications`, `activeTab`, `scripting`, `tabs`
 - Host: `https://seller.ozon.ru/*`, `https://www.ozon.ru/*`
 - Content scripts инжектятся программно через `chrome.scripting.executeScript`
@@ -26,34 +27,43 @@ Chrome Extension (Manifest V3)
 - Background: `background/service-worker.js`
 - Options: `options/options.html`
 
-### background/service-worker.js (~584 строк)
+### background/service-worker.js (~732 строк)
 - **Message hub** — принимает сообщения от content и popup, relay между ними
 - **Actions**: `getStatus`, `setRunning`, `updateSchedule`, `logComplaint`, `showNotification`, `getConfig`
-- **Duplicate Actions**: `launchDuplicates`, `stopDuplicates`, `duplicatePageResult`, `duplicateScanStopped`, `updateDuplicateStats`, `launchCurrentPage`, `launchBatchProducts`, `batchSkusCollected`
-- **Relay actions**: `scanBrandsResult`, `updateStats`, `done`, `logUpdate`, `techLog`, `doneDuplicates`, `duplicatePageDone`
-- **duplicateScanState**: `{ skus, currentIndex, results, config, tabId }` — состояние последовательного обхода SKU
+- **Duplicate Actions**: `launchDuplicates`, `stopDuplicates`, `pauseDuplicates`, `resumeDuplicates`, `resumeFromSaved`, `getPausedSession`, `duplicatePageResult`, `duplicateScanStopped`, `updateDuplicateStats`, `launchCurrentPage`, `launchBatchProducts`, `batchSkusCollected`
+- **History Actions**: `getHistory`, `clearHistory`
+- **Relay actions**: `scanBrandsResult`, `updateStats`, `done`, `logUpdate`, `techLog`, `doneDuplicates`, `duplicatePageDone`, `duplicateScanPaused`, `duplicateScanResumed`
+- **duplicateScanState**: `{ skus, currentIndex, results, config, tabId, isPaused }` — состояние последовательного обхода SKU
+- **Paused session persistence**: `savePausedSession()`, `clearPausedSession()`, `loadPausedSession()` — сохранение в `obgPausedSession`
 - **Scheduling**: `chrome.alarms` для автозапуска (ALARM_SELLERS, ALARM_PRODUCTS)
 - **Logging**: `addLogEntry()` — сохраняет в `chrome.storage.local`, лимит **5000** записей
+- **History**: `saveDuplicateSession()` — до 10 сессий в `obgDupHistory`
 
 #### Ключевые функции service-worker.js
 
 | Функция | Описание |
 |---------|----------|
 | `navigateInjectStart(url, script, action, config)` | Найти/создать вкладку → инжект скрипта → отправить сообщение |
-| `injectAndStart(tabId, scriptFile, action, config)` | Выполнить скрипт + CSS |
+| `injectAndStart(tabId, scriptFile, action, config)` | `executeScript(allFrames: false)` + CSS |
 | `waitForTabComplete(tabId)` | Ожидание загрузки вкладки (15с таймаут) |
 | `switchToBrandCabinet(tabId)` | MAIN world скрипт — клик по «Кабинет бренда» в дропдауне |
-| `launchDuplicateSearch(skus, config)` | Точка входа: установить состояние, запустить цикл |
+| `launchDuplicateSearch(skus, config, strategy)` | Точка входа: установить состояние, запустить цикл |
 | `processDuplicateSku(index)` | Основной цикл: открыть страницу → инжект → ждать результатов |
-| `handleDuplicatePageResult(msg)` | Сохранить результаты, обновить статистику, поставить следующий SKU |
-| `stopDuplicateSearch()` | Прервать текущий скан |
+| `handleDuplicatePageResult(msg)` | Сохранить результаты, проверить isPaused, поставить следующий SKU |
+| `pauseDuplicateSearch()` | Установить isPaused + сохранить в storage |
+| `resumeDuplicateSearch()` | Снять isPaused + продолжить с текущего индекса |
+| `resumeFromSavedSession()` | Восстановить duplicateScanState из obgPausedSession |
+| `stopDuplicateSearch()` | Прервать текущий скан, сохранить в историю |
+| `saveDuplicateSession(status)` | Сохранить в obgDupHistory (до 10 сессий) |
+| `savePausedSession()` | Snapshot сессии → obgPausedSession |
+| `clearPausedSession()` | Очистить obgPausedSession |
 | `launchCurrentPageScan()` | Извлечь SKU из URL активной вкладки: `/product/.*?(\d{5,})/` |
 | `launchBatchFromProducts(config)` | Открыть страницу товаров, инжектировать batch collector |
 | `updateSchedule(config)` | Настройка Chrome alarms для продавцов |
 | `updateProductSchedule(config)` | Настройка Chrome alarms для товаров |
 | `addLogEntry(entry)` | Сохранить в storage (макс. 5000 записей) |
 
-### content/content-duplicates.js (~610 строк) — МОДУЛЬ ДУБЛИКАТОВ
+### content/content-duplicates.js (~641 строк) — МОДУЛЬ ДУБЛИКАТОВ
 Работает на `www.ozon.ru/product/*`. IIFE с guard `#__obg-duplicates-guard`.
 
 #### Основные функции
@@ -71,7 +81,7 @@ Chrome Extension (Manifest V3)
 | `extractSkuFromUrl(url)` | Regex: `/product/.*?(\d{5,})/` → SKU |
 | `extractCardData(container, sku, href)` | Извлечение: name, price (минимальная), seller, image, rating, reviews |
 | `applyWhitelist(competitors)` | Фильтрация по `duplicateWhitelist` (sku/seller/inn) |
-| `showPanel()` | Drag-панель на странице OZON (синяя тема, логи, свернуть/закрыть) |
+| `showPanel()` | Drag-панель на странице OZON (синяя тема, ⏸ ⏹ − × кнопки) |
 
 #### 4 стратегии сбора (по порядку):
 1. **data-widget секции** — `[data-widget*="Similar/Seller/Offer/Cheaper"]` (самый надёжный)
@@ -80,147 +90,130 @@ Chrome Extension (Manifest V3)
 4. **Виджет-парсинг** — финальный резерв через атрибуты `data-widget`
 
 #### Протокол сообщений:
-- **Принимает:** `startDuplicateScan { skus[], currentIndex, config }` + `stopDuplicates`
+- **Принимает:** `startDuplicateScan { skus[], currentIndex, config }` + `stopDuplicates` + `pauseDuplicates` + `resumeDuplicates`
 - **Отправляет:** `duplicatePageResult { sku, competitors[], error?, pageIndex, totalSkus }` + `techLog`
 
-### content/content-batch-products.js (~149 строк) — BATCH КОЛЛЕКТОР SKU (NEW v3.1.0)
-Работает на `seller.ozon.ru/app/products`. IIFE с guard `#__obg-batch-guard`.
+### content/content-batch-products.js (~473 строк) — BATCH КОЛЛЕКТОР SKU (v3.5.0 rewrite)
+Работает на `seller.ozon.ru/app/products`. IIFE с тройной защитой от повторной инъекции.
+
+#### Защита от двойной инъекции:
+1. `window.__obgBatchLoaded` — глобальный флаг
+2. `#__obg-batch-guard` — DOM-элемент
+3. `isCollecting = true` — устанавливается немедленно в обработчике сообщений
 
 #### Основные функции
 
 | Функция | Описание |
 |---------|----------|
-| `collectAllSkus()` | Цикл по страницам, накопление SKU, пагинация |
-| `parseCurrentPageSkus()` | 3 стратегии: data-widget spans, product links, barcode cells |
-| `waitForTable()` | Ожидание `table tbody tr` (30 попыток) |
-| `goToNextPage()` | Поиск и клик следующей страницы пагинации (10 попыток) |
+| `collectAllSkus()` | Главный цикл: scroll+collect по страницам → пагинация → отправка |
+| `scrollAndCollectPageSkus()` | **Инкрементальная прокрутка** контейнера: 300мс между шагами, сбор строк на каждой позиции |
+| `findScrollContainer()` | Поиск прокручиваемого контейнера вверх по DOM (overflow-y: auto/scroll) |
+| `parseVisibleRows(statusIdx, seenSkus, seenRowKeys)` | Парсинг видимых строк с дедупликацией по SKU + текстовому ключу |
+| `getStatusColumnIndex()` | Поиск колонки «Статус» в заголовке таблицы |
+| `isRowActive(row, statusIdx)` | Фильтрация: пропускает «Не продается», «Убран из продажи», «Заблокирован» |
+| `goToNextPage(tableRect)` | 5 стратегий пагинации без зависимости от контейнера |
+| `waitForTableStable()` | Ожидание стабилизации DOM (5 раундов по 500мс) |
+| `waitForTableUpdate(oldFirstSku)` | Ожидание обновления таблицы после клика пагинации |
 
-#### 3 стратегии извлечения SKU:
+#### 4 стратегии извлечения SKU из строки:
 1. **data-widget spans** — `[data-widget="@products/list-ods/table/cell/sku-fbs/span"]` → regex `SKU\s+(\d{5,})`
 2. **Product links** — `a[data-widget="products-table-row-title-link"]` → href `/product/(\d{5,})`
 3. **Barcode cells** — `[data-style="text"]` → regex `OZN(\d{5,})`
+4. **Full text** — `textContent.match(/SKU\s+(\d{5,})/)` (вся строка)
+
+#### 5 стратегий пагинации (goToNextPage):
+1. **Нумерованная кнопка** currentPage+1
+2. **aria-label** содержащий «next»/«вперёд»/«следующ»
+3. **Текстовые стрелки** `›` или `»`
+4. **SVG-стрелка** правее последней нумерованной кнопки
+5. **Следующая по DOM** нумерованная кнопка после текущей
+
+#### Виртуальный скроллинг:
+Таблица OZON рендерит ~36 строк на страницу, но в DOM одновременно видны ~9-10. `scrollAndCollectPageSkus()` прокручивает контейнер инкрементально (шаг = высота контейнера - 50px) и собирает строки на каждой позиции скролла, дедуплицируя по SKU и текстовому ключу.
 
 #### Протокол сообщений:
 - **Принимает:** `collectProductSkus`
 - **Отправляет:** `batchSkusCollected { skus[], error? }` + `techLog`
-- Guard против двойного запуска: флаг `isCollecting`
 
-### content/content.js (~1743 строк) — LEGACY: МОДУЛЬ ПРОДАВЦОВ
-Работает на `seller.ozon.ru/app/brand/sellers*`. IIFE с guard `#__obg-sellers-guard`.
-
-#### Состояние
-- `config`, `isRunning`, `shouldStop`, `stats`, `panelEl`, `logLines`
-
-#### Основные функции
-
-| Функция | Строки | Описание |
-|---------|--------|----------|
-| `safeSend()` | 21-27 | Безопасная отправка сообщений в background |
-| `simulateRealClick()` | 31-68 | PointerEvents + MouseEvents + native click для React 17+ |
-| `deepQuerySelector/All()` | 71-121 | Поиск через Shadow DOM и iframes |
-| **Message listener** | 124-137 | Обработка: `start`, `stop`, `scanBrands` |
-| `scanBrandsOnPage()` | 140-308 | Автопоиск брендов (4 стратегии) |
-| `startProcess()` | 416-446 | Главная точка входа: stats reset, showPanel, processAllPages |
-| `stopProcess()` | 448-459 | Немедленная остановка всех процессов |
-| `processAllPages()` | 462-516 | Цикл: парсинг → whitelist check → fileComplaint → next page |
-| `parseSellersTable()` | 523-548 | Парсинг таблицы OZON (td[0]=checkbox, td[1]=name, td[2]=brand, td[3]=count, td[4]=country) |
-| `extractSellerFromRow()` | 588-628 | Извлечение seller из строки таблицы |
-| `parseNameCell()` | 632-669 | 3 стратегии парсинга имени+ИНН |
-| `findMenuButton()` | 671-697 | Поиск кнопки ⋮ (три точки) |
-| `checkWhitelist()` | 700-710 | Проверка по name/inn |
-| `fileComplaint()` | 716-850 | 5 шагов: menu → пожаловаться → textarea → file → submit |
-| `findComplainButtonWithRetry()` | 882-908 | 5 попыток найти «Пожаловаться» |
-| `findComplainButtonInDOM()` | 910-971 | Specificity scoring, исключение своей панели |
-| `findTextareaInModal()` | 1067-1158 | 5 стратегий + 8 попыток |
-| `findComplaintSidebar()` | 1287-1336 | 3 стратегии поиска sidebar жалобы |
-| `handleComplaintReasonStep()` | 1229-1284 | Multi-step wizard (radio/select/buttons) |
-| `attachFile()` | 1019-1062 | base64 → File → DataTransfer → input[type=file] |
-| `setInputValueSmart()` | 1339-1360 | React-compatible: contenteditable + native setter |
-| `goToNextPage()` | 1420-1470 | Пагинация: data-selected, disabled, next |
-| `showPanel()` | 1514-1629 | Плавающая панель: stats, log, drag, minimize, stop |
-| `log()` | 1690-1707 | Логирование + techLog relay в popup |
-
-#### Поток работы fileComplaint:
-1. `simulateRealClick(menuButton)` — клик ⋮
-2. `findComplainButtonWithRetry()` — ищем «Пожаловаться на продавца»
-3. `simulateRealClick(complainButton)` — открываем sidebar
-4. `findTextareaInModal()` — ищем textarea (8 попыток)
-5. `setInputValueSmart(textarea, text)` — заполняем текст
-6. `attachFile(brand)` — прикрепляем файл + ожидание 8с
-7. `findSubmitButton()` + `simulateRealClick(submitButton)` — отправляем
-8. `waitCooldown()` — задержка + jitter
-
-### content/content-products.js (~879 строк) — МОДУЛЬ ТОВАРОВ
-Работает на `seller.ozon.ru/app/brand-products/*`. IIFE с guard `#__obg-products-guard`.
-
-#### Таблица товаров (7 колонок)
-
-| Index | Содержимое | Извлечение |
-|-------|-----------|------------|
-| td[0] | Название + SKU + картинка | `[title]`, `a[href*="ozon.ru"]`, `[class*="label"]` → SKU |
-| td[1] | Дата создания | `[title]` |
-| td[2] | Бренд | `[title]` |
-| td[3] | Продавец | `[title]` — используется для whitelist фильтра |
-| td[4] | Цена покупателя | textContent |
-| td[5] | Цена продавца | `[title]` |
-| td[6] | Меню ⋮ | `button` с SVG |
+### libs/xlsx-reader.js (~237 строк) — XLSX ПАРСЕР (NEW v3.5.0)
+Минимальный парсер XLSX-файлов для Chrome Extension. Используется для импорта SKU из файла «Цены товаров» (seller.ozon.ru → Шаблоны → Цены товаров).
 
 #### Основные функции
 
 | Функция | Описание |
 |---------|----------|
-| `parseProductsTable()` | Парсинг таблицы товаров |
-| `extractProductFromRow()` | Извлечение: name, sku, link, brand, seller, date, price, menuButton |
-| `checkWhitelist(sellerName)` | Проверка продавца по whitelist (name only) |
+| `readXlsxSkus(buffer)` | Главная точка входа: ArrayBuffer → `{skus[], total, filtered}` |
+| `unzipFiles(buffer)` | Парсинг ZIP-архива: local file headers, deflate через DecompressionStream |
+| `inflateData(compressedBytes)` | Декомпрессия через `DecompressionStream('deflate-raw')` |
+| `parseSharedStrings(xml)` | Парсинг `xl/sharedStrings.xml` → массив строк |
+| `parseSheetSkus(xml, sharedStrings)` | Поиск колонки SKU, извлечение данных, фильтрация по статусу |
+| `getCellValue(cell, sharedStrings)` | Получение значения ячейки (с учётом shared strings) |
+
+#### Структура XLSX «Цены товаров»:
+- Sheet1 — инструкция «Как работать с шаблоном»
+- Sheet2 — данные: Row1=категории заголовков, Row2=заголовки (A=Артикул, B=SKU, D=Статус), Row3=подзаголовки, Row4=пустая, Row5+=данные
+- Колонка B содержит числовые SKU (10-значные)
+- Колонка D содержит статус: «Продается», «Готов к продаже», «Не продается»
+
+### content/content.js (~1743 строк) — LEGACY: МОДУЛЬ ПРОДАВЦОВ
+Работает на `seller.ozon.ru/app/brand/sellers*`. IIFE с guard `#__obg-sellers-guard`.
+
+#### Основные функции
+
+| Функция | Описание |
+|---------|----------|
+| `startProcess()` | Главная точка входа: stats reset, showPanel, processAllPages |
+| `stopProcess()` | Немедленная остановка всех процессов |
+| `processAllPages()` | Цикл: парсинг → whitelist check → fileComplaint → next page |
+| `parseSellersTable()` | Парсинг таблицы OZON (5 колонок: checkbox, name, brand, count, country) |
+| `fileComplaint()` | 5 шагов: menu → пожаловаться → textarea → file → submit |
+| `scanBrandsOnPage()` | Автопоиск брендов (4 стратегии) |
+| `simulateRealClick()` | PointerEvents + MouseEvents + native click для React 17+ |
+| `showPanel()` | Плавающая панель: stats, log, drag, minimize, stop |
+
+### content/content-products.js (~879 строк) — LEGACY: МОДУЛЬ ТОВАРОВ
+Работает на `seller.ozon.ru/app/brand-products/*`. IIFE с guard `#__obg-products-guard`.
+
+#### Основные функции
+
+| Функция | Описание |
+|---------|----------|
+| `parseProductsTable()` | Парсинг таблицы товаров (7 колонок) |
 | `fileProductComplaint()` | Полный цикл: menu → Пожаловаться → textarea → file → submit |
-| `getProductComplaintText()` | Приоритет: productComplaintText → brand.complaint → defaultComplaint |
-| `findComplainButtonInDOM()` | Ищет «Пожаловаться» (не «Пожаловаться на продавца») |
+| `checkWhitelist(sellerName)` | Проверка продавца по whitelist (name only) |
 
-#### Отличия от sellers:
-- Messages: `startProducts`/`stopProducts`/`doneProducts`/`updateProductStats`
-- Панель: оранжевая тема (`#e65100`)
-- Лог-префикс: `[OBG-P]`, `[Товар]`
-- Кнопка меню: текст «Пожаловаться» (без «на продавца»)
-- Фильтр: по whitelist seller name (не по стране)
-- Config: `productComplaintText`, `productFileData`, `productFileName`
-
-### content/content.css (192 строки)
+### content/content.css (~191 строк)
 - `.obg-overlay`, `.obg-panel` — стили плавающей панели (drag)
 - `.obg-panel--orange` — оранжевая тема для товаров
-- `.obg-violator-row` — красная подсветка нарушителя
-- `.obg-whitelisted-row` — зелёная подсветка разрешённого
-- `.obg-badge--violator`, `.obg-badge--safe` — бейджи
+- `.obg-violator-row` / `.obg-whitelisted-row` — подсветка строк
+- `.obg-badge--violator` / `.obg-badge--safe` — бейджи
 
-### popup/popup.html (~492 строк)
+### popup/popup.html (~534 строк)
 5 вкладок: Дубликаты | Отчёт | Настройки | Бренды (legacy) | Инфо
-- **Дубликаты**: 3 стратегии сбора (ручной ввод, текущая страница, batch), прогресс-бар, быстрые результаты, копирование SKU + Excel
-- **Отчёт**: таблица дубликатов + группировка по продавцам + export Excel/CSV + техлог
-- **Настройки**: вайтлист (SKU/продавец/ИНН), экспорт/импорт данных, задержка
-- **Бренды (legacy)**: deprecated notice + полный старый функционал (продавцы, товары, жалобы, бренды, whitelist, расписание)
+- **Дубликаты**: 4 стратегии сбора (ручной ввод, текущая страница, batch, **проверка из таблицы XLSX**), прогресс-бар, быстрые результаты, копирование SKU + Excel, карточка возобновления паузы
+- **Отчёт**: таблица дубликатов (с кнопками 📋 копирования SKU) + группировка по продавцам + export Excel/CSV + история поисков + техлог
+- **Настройки**: вайтлист (SKU/продавец/ИНН), экспорт/импорт данных
+- **Бренды (legacy)**: deprecated notice + полный старый функционал
 - **Инфо**: 3 шага поиска дубликатов + советы + совместимость
-- Footer: `v3.1.1 by firayzer`
+- Footer: `v3.5.0 by firayzer`
+- Scripts: `libs/xlsx-reader.js` + `popup.js`
 
-### popup/popup.js (~995 строк)
+### popup/popup.js (~1244 строк)
 - `DEFAULT_CONFIG`: brands[], whitelist[], duplicateWhitelist[], duplicateDelay:3, lastDuplicateResults[], savedSkuInput
 - `MAX_LOG_ENTRIES = 5000`
-- `renderBrands()` — red highlight `brand-item--no-file` если нет fileData
-- `renderLog()` — table с tbody, count X/5000
-- `renderTechLog()` — тёмная консоль, color-coded lines
-- Export: `exportCSV()` (BOM+`;`), `exportExcel()` (HTML table .xls)
-- Sub-tabs: `.sub-tab` → `#subtab-table` / `#subtab-sellers` / `#subtab-technical`
-- Message listener: `updateStats`, `done`, `logUpdate`, `techLog`, `scanBrandsResult`, `duplicatePageDone`, `doneDuplicates`
-- `ensureContentScript()` — `chrome.scripting.executeScript/insertCSS`
-- `ensureOzonPage(targetUrl, urlCheck)` — универсальная авто-навигация на любую страницу OZON
-- `ensureSellersPage()` → `ensureOzonPage('…/brand/sellers', …)`
-- `ensureProductsPage()` → `ensureOzonPage('…/brand-products/all', …)`
-- `waitForTabLoad()` — ожидание `chrome.tabs.onUpdated` status=complete + 2с SPA render, таймаут 15с
-- `launchDuplicateSearch()` — передать SKU в background для обработки
-- `saveTechLogs()` / `loadTechLogs()` — персист в `obgTechLog` (макс. 500 записей)
+- **4 стратегии**: `manual`, `current`, `batch`, `file` — переключение через `mode-switch[data-name="dupStrategy"]`
+- **XLSX импорт**: `xlsxParsedSkus[]` — локальная переменная, заполняется при выборе файла через `readXlsxSkus()`
+- **Пауза/Продолжение**: `scanPaused` флаг, `checkPausedSession()` при init
+- **Карточка возобновления**: `#dupResumeCard` с `btnResumeSaved`/`btnDiscardSaved`
+- **Копирование SKU**: `.btn-copy-sku` кнопки с обработчиками в таблице и быстрых результатах
+- **История**: `renderHistory()` с кнопками «Загрузить» и «📥 SKU»
+- `stratLabel`: `{ manual: 'Ручной', current: 'Страница', batch: 'Пакетный', file: 'Из таблицы' }`
+- Message listener: `batchSkusCollected`, `updateDuplicateStats`, `duplicatePageDone`, `duplicateScanPaused`, `duplicateScanResumed`, `doneDuplicates`, `updateStats`, `done`, `logUpdate`, `techLog`, `updateProductStats`, `doneProducts`, `scanBrandsResult`
 
-### popup/popup.css (~1146 строк)
-Ключевые блоки: tabs, cards, inputs, brand-item, file-upload, stats, log-header, sub-tabs, log-table, log-export, tech-log-list, dup-progress, dup-quick-list, dup-group, scrollbar, footer
+### popup/popup.css (~1237 строк)
+Ключевые блоки: tabs, cards, inputs, brand-item, file-upload, stats, log-header, sub-tabs, log-table, log-export, tech-log-list, dup-progress, dup-quick-list, dup-group, btn-copy-sku, scrollbar, footer, notice--deprecated, notice--info
 
-### options/options.html (79 строк)
+### options/options.html (78 строк)
 Статичная страница: инструкция, совместимость, технические детали
 
 ## Config (chrome.storage.local → obgConfig)
@@ -258,7 +251,11 @@ Chrome Extension (Manifest V3)
 }
 ```
 
-**Tech logs:** хранятся отдельно в `obgTechLog` (до 500 записей)
+**Storage keys:**
+- `obgConfig` — основная конфигурация
+- `obgTechLog` — технические логи (до 500 записей)
+- `obgDupHistory` — история поисков дубликатов (до 10 сессий)
+- `obgPausedSession` — сохранённая приостановленная сессия
 
 ## Поток сообщений
 
@@ -267,28 +264,35 @@ popup.js → chrome.tabs.sendMessage → content.js (start/stop/scanBrands)
 content.js → chrome.runtime.sendMessage → service-worker.js (logComplaint/setRunning/techLog/updateStats)
 service-worker.js → chrome.runtime.sendMessage → popup.js (relay: techLog/updateStats/done/scanBrandsResult)
 
-popup.js → chrome.runtime.sendMessage → service-worker.js (launchDuplicates/stopDuplicates/launchCurrentPage/launchBatchProducts)
-service-worker.js → chrome.tabs.sendMessage → content-duplicates.js (startDuplicateScan)
+popup.js → chrome.runtime.sendMessage → service-worker.js (launchDuplicates/stopDuplicates/pauseDuplicates/resumeDuplicates/resumeFromSaved/getPausedSession/launchCurrentPage/launchBatchProducts)
+service-worker.js → chrome.tabs.sendMessage → content-duplicates.js (startDuplicateScan/stopDuplicates/pauseDuplicates/resumeDuplicates)
 content-duplicates.js → chrome.runtime.sendMessage → service-worker.js (duplicatePageResult)
-service-worker.js → chrome.runtime.sendMessage → popup.js (relay: duplicatePageDone/doneDuplicates/updateDuplicateStats)
+service-worker.js → chrome.runtime.sendMessage → popup.js (relay: duplicatePageDone/doneDuplicates/updateDuplicateStats/duplicateScanPaused/duplicateScanResumed)
 
 service-worker.js → chrome.tabs.sendMessage → content-batch-products.js (collectProductSkus)
 content-batch-products.js → chrome.runtime.sendMessage → service-worker.js (batchSkusCollected)
 ```
 
-## Архитектура поиска дубликатов (v3.0+)
+## Архитектура поиска дубликатов (v3.5.0)
 
 ```
-[Popup] 3 стратегии запуска:
+[Popup] 4 стратегии запуска:
   ├── Ручной ввод SKU → launchDuplicates
   ├── Текущая страница → launchCurrentPage → background извлекает SKU из URL
-  └── Batch с товаров → launchBatchProducts
-       └── background открывает seller.ozon.ru/app/products
-           → инжектирует content-batch-products.js
-           → получает batchSkusCollected
+  ├── Batch с товаров → launchBatchProducts
+  │    └── background открывает seller.ozon.ru/app/products
+  │        → инжектирует content-batch-products.js
+  │        → scroll+collect виртуально-скроллируемой таблицы
+  │        → получает batchSkusCollected
+  │        → запускает launchDuplicates
+  └── Проверка из таблицы (NEW v3.5.0)
+       └── popup парсит XLSX локально через libs/xlsx-reader.js
+           → извлекает SKU из колонки B
+           → фильтрует по статусу
            → запускает launchDuplicates
 
 [Service Worker] processDuplicateSku(index) цикл:
+  ├── Проверить isPaused → если да, ждать
   ├── Открыть/переиспользовать вкладку www.ozon.ru/product/{SKU}
   ├── Инжектировать content-duplicates.js
   ├── Отправить startDuplicateScan
@@ -302,37 +306,22 @@ content-batch-products.js → chrome.runtime.sendMessage → service-worker.js (
   4. Поиск по виджетам
 ```
 
-## Селекторы OZON (sellers page)
-
-| Элемент | Селектор |
-|---------|----------|
-| Таблица | `table tbody tr` (min 5 td) |
-| Name cell | `td[1]` → `.md5-bu7` (name), `.md5-ub7` (inn) |
-| Brand cell | `td[2]` |
-| Country cell | `td[4]` — текст CN/RU/TR и т.д. |
-| Menu ⋮ | Последний `td` → `button` с SVG |
-| Пожаловаться | `[role="menuitem"]` с текстом «пожаловаться» |
-| Sidebar | div с «Жалоба на» + form/textarea/file input |
-| Textarea | `textarea[id^="baseInput"]`, class `r8c110-a2` |
-| File input | `input[type="file"][accept=".jpg,.png,.jpeg,.pdf"]` |
-| Submit | `form button[type="submit"]` с текстом «Отправить» |
-| Pagination | `ul li button` с `data-selected="true"` |
-
-## Счётчики строк (актуально для v3.1.1)
+## Счётчики строк (актуально для v3.5.0)
 
 | Файл | Строк |
 |------|-------|
 | content/content.js | ~1743 |
-| popup/popup.css | ~1146 |
+| popup/popup.css | ~1237 |
+| popup/popup.js | ~1244 |
 | content/content-products.js | ~879 |
-| popup/popup.js | ~995 |
-| popup/popup.html | ~492 |
-| background/service-worker.js | ~584 |
-| content/content-duplicates.js | ~610 |
-| content/content-batch-products.js | ~149 |
-| content/content.css | ~192 |
-| options/options.html | 79 |
-| **Итого** | **~6869** |
+| background/service-worker.js | ~732 |
+| content/content-duplicates.js | ~641 |
+| popup/popup.html | ~534 |
+| content/content-batch-products.js | ~473 |
+| libs/xlsx-reader.js | ~237 |
+| content/content.css | ~191 |
+| options/options.html | 78 |
+| **Итого** | **~7989** |
 
 ## Известные особенности
 
@@ -342,7 +331,9 @@ content-batch-products.js → chrome.runtime.sendMessage → service-worker.js (
 - MIN_COOLDOWN_MS = 10с, jitter 0-5с
 - Файл загружается через DataTransfer API, ожидание 8с
 - Плавающая панель исключается из поиска кнопок (#obg-float-panel)
-- Content scripts инжектятся программно (не через matches в manifest)
+- Content scripts инжектятся программно, `allFrames: false` (не через matches в manifest)
 - switchToBrandCabinet() требует MAIN world для доступа к DOM
-- Batch collection: guard `isCollecting` предотвращает двойной запуск (v3.1.1 fix)
+- Batch collection: тройная защита от двойной инъекции (window flag + DOM guard + isCollecting)
 - Tech logs: отдельный ключ `obgTechLog`, лимит 500 записей
+- Виртуальный скроллинг: таблица товаров рендерит ~9-10 строк из ~36 в DOM одновременно
+- XLSX парсер: использует DecompressionStream API (Chrome 80+), парсит ZIP + XML локально

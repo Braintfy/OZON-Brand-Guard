@@ -400,7 +400,7 @@
     dupHistory.forEach((session, idx) => {
       const d = new Date(session.date);
       const dateStr = d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-      const stratLabel = { manual: 'Ручной', current: 'Страница', batch: 'Пакетный' }[session.strategy] || session.strategy;
+      const stratLabel = { manual: 'Ручной', current: 'Страница', batch: 'Пакетный', file: 'Из таблицы' }[session.strategy] || session.strategy;
       const statusLabel = { completed: '✅', stopped: '⏹', paused: '⏸' }[session.status] || '';
       const uniqueSkus = [...new Set((session.results || []).map(r => r.sku))];
 
@@ -664,12 +664,44 @@
         document.getElementById('strategyManual').style.display = currentStrategy === 'manual' ? 'block' : 'none';
         document.getElementById('strategyCurrent').style.display = currentStrategy === 'current' ? 'block' : 'none';
         document.getElementById('strategyBatch').style.display = currentStrategy === 'batch' ? 'block' : 'none';
+        document.getElementById('strategyFile').style.display = currentStrategy === 'file' ? 'block' : 'none';
       });
     });
 
     document.getElementById('dupDelayRange').addEventListener('input', (e) => document.getElementById('dupDelayValue').textContent = e.target.value + 'с');
     document.getElementById('dupDelayRange').addEventListener('change', async (e) => { config.duplicateDelay = parseInt(e.target.value, 10); await saveConfig(); });
     document.getElementById('skuInput').addEventListener('change', async (e) => { config.savedSkuInput = e.target.value; await saveConfig(); });
+
+    // XLSX file import
+    let xlsxParsedSkus = [];
+    document.getElementById('btnSelectXlsx').addEventListener('click', () => document.getElementById('xlsxFileInput').click());
+    document.getElementById('xlsxFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      document.getElementById('xlsxFileName').textContent = file.name;
+      document.getElementById('xlsxFileInfo').style.display = 'none';
+      try {
+        const buffer = await file.arrayBuffer();
+        const result = await readXlsxSkus(buffer);
+        xlsxParsedSkus = result.skus;
+        const infoEl = document.getElementById('xlsxFileInfo');
+        const textEl = document.getElementById('xlsxFileInfoText');
+        if (xlsxParsedSkus.length > 0) {
+          let msg = `Найдено ${xlsxParsedSkus.length} активных SKU`;
+          if (result.filtered > 0) msg += ` (пропущено ${result.filtered} неактивных)`;
+          msg += ` из ${result.total} товаров`;
+          textEl.textContent = msg;
+          infoEl.style.display = 'flex';
+        } else {
+          textEl.textContent = 'SKU не найдены в файле. Убедитесь, что это файл «Цены товаров» из seller.ozon.ru';
+          infoEl.style.display = 'flex';
+        }
+      } catch (err) {
+        document.getElementById('xlsxFileInfoText').textContent = 'Ошибка чтения файла: ' + err.message;
+        document.getElementById('xlsxFileInfo').style.display = 'flex';
+        xlsxParsedSkus = [];
+      }
+    });
 
     // Resume saved paused session
     document.getElementById('btnResumeSaved').addEventListener('click', () => {
@@ -711,6 +743,9 @@
         safeSendRuntime({ action: 'launchCurrentPage', config: dupConfig });
       } else if (currentStrategy === 'batch') {
         safeSendRuntime({ action: 'launchBatchProducts', config: dupConfig });
+      } else if (currentStrategy === 'file') {
+        if (xlsxParsedSkus.length === 0) { alert('Сначала выберите файл «Цены товаров» (.xlsx) с SKU'); return; }
+        safeSendRuntime({ action: 'launchDuplicates', skus: xlsxParsedSkus, config: dupConfig, strategy: 'file' });
       }
 
       document.getElementById('btnStartDuplicates').style.display = 'none';
