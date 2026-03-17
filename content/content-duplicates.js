@@ -1,6 +1,6 @@
-// OZON Brand Guard — Duplicate Detection Content Script v5.0.0
+// OZON Brand Guard — Duplicate Detection Content Script v5.1.0
 // Работает на www.ozon.ru/product/* страницах
-// Парсит раздел "Другие продавцы" / "Есть дешевле" — находит ПРОДАВЦОВ на вашей карточке товара
+// Гибридный подход: seller-ссылки (Другие продавцы) + product-ссылки (Похожие предложения)
 // Автор: firayzer (https://t.me/firayzer)
 
 (function () {
@@ -88,7 +88,10 @@
       const hasProduct = document.querySelector('[data-widget="webProductHeading"]') ||
                          document.querySelector('[data-widget="webSale"]') ||
                          document.querySelector('h1') ||
-                         document.querySelector('[data-widget="webPrice"]');
+                         document.querySelector('[data-widget="webPrice"]') ||
+                         document.querySelector('[data-widget="webSoldOut"]') ||
+                         document.querySelector('[data-widget="webOutOfStock"]') ||
+                         document.body.innerText.includes('Этот товар закончился');
       if (hasProduct) {
         log('✓ Страница загружена');
         await sleep(1500);
@@ -182,8 +185,18 @@
       log(`[DIAG] Стратегия 3: найдено ${broad.length} продавцов`);
     }
 
+    // Strategy 4: Search "Похожие предложения" for product-link counterfeits
     if (sellers.length === 0) {
-      log('ℹ Других продавцов не найдено на этой карточке');
+      log('[DIAG] Стратегия 4: Поиск в "Похожие предложения" (product-ссылки)...');
+      const similar = findAndParseSimilarProducts(mySku, productName, productUrl, productImage);
+      for (const item of similar) {
+        sellers.push(item);
+      }
+      log(`[DIAG] Стратегия 4: найдено ${similar.length} похожих товаров`);
+    }
+
+    if (sellers.length === 0) {
+      log('ℹ Других продавцов/похожих товаров не найдено на этой карточке');
     }
 
     // Filter own seller by config name
@@ -277,11 +290,19 @@
         log('[DIAG] Секция продавцов найдена в DOM');
         return;
       }
+      // Also check for "Похожие предложения" widgets (sold-out products)
+      if (document.querySelector('[data-widget*="Similar"]') ||
+          document.querySelector('[data-widget*="similar"]') ||
+          document.querySelector('[data-widget="webRecommendationWidget"]')) {
+        log('[DIAG] Секция похожих предложений найдена в DOM');
+        return;
+      }
       // Also check by text content (quick check)
       const allText = document.body.innerText.toLowerCase();
       if (allText.includes('другие продавцы') || allText.includes('есть дешевле') ||
-          allText.includes('другие предложения')) {
-        log('[DIAG] Текст секции продавцов найден');
+          allText.includes('другие предложения') || allText.includes('похожие предложения') ||
+          allText.includes('похожие товары') || allText.includes('аналогичные товары')) {
+        log('[DIAG] Текст секции найден');
         return;
       }
       await sleep(500);
@@ -531,6 +552,237 @@
   }
 
   // ══════════════════════════════════════════════════════════════
+  // ══ STRATEGY 4: Similar products (product-link counterfeits) ══
+  // ══ For sold-out pages: "Похожие предложения" section         ══
+  // ══════════════════════════════════════════════════════════════
+
+  function findAndParseSimilarProducts(mySku, productName, productUrl, productImage) {
+    const results = [];
+    const seenSkus = new Set();
+    const ownPanel = document.getElementById('obg-dup-panel');
+
+    // Current product SKU from URL — exclude it from results
+    const currentProductSku = extractProductSkuFromUrl(productUrl);
+    if (currentProductSku) seenSkus.add(currentProductSku);
+
+    // Find the "Похожие предложения" / similar section
+    const section = findSimilarSection();
+    if (!section) {
+      log('[DIAG] Секция "Похожие предложения" не найдена, fallback — все product-ссылки');
+      // Fallback: all product links outside header/footer/nav/panel
+      return fallbackProductLinkSearch(mySku, productName, productUrl, productImage, seenSkus);
+    }
+
+    log(`[DIAG] Найдена секция: "${(section.getAttribute('data-widget') || section.textContent.substring(0, 40)).trim()}"`);
+
+    // Parse product cards from the section
+    const productLinks = section.querySelectorAll('a[href*="/product/"]');
+    log(`[DIAG] Product-ссылок в секции: ${productLinks.length}`);
+
+    for (const link of productLinks) {
+      if (ownPanel && ownPanel.contains(link)) continue;
+
+      const href = link.getAttribute('href') || '';
+      const sku = extractProductSkuFromUrl(href);
+      if (!sku || seenSkus.has(sku)) continue;
+      seenSkus.add(sku);
+
+      // Walk up to the product card container
+      const card = findProductCard(link);
+      if (!card) continue;
+
+      const itemName = extractProductName(card, link);
+      const price = extractPrice(card);
+      const seller = extractSellerFromCard(card);
+      const image = extractImageFromCard(card);
+      const fullUrl = href.startsWith('http') ? href : 'https://www.ozon.ru' + href.split('?')[0];
+
+      results.push({
+        sku: sku,
+        name: itemName || productName,
+        price: price,
+        seller: seller,
+        sellerUrl: '',
+        url: fullUrl,
+        image: image || productImage,
+        rating: '',
+        reviews: ''
+      });
+    }
+
+    return results;
+  }
+
+  function findSimilarSection() {
+    const ownPanel = document.getElementById('obg-dup-panel');
+
+    // Method 1: Widget selectors for similar/recommendation sections
+    const widgetSelectors = [
+      '[data-widget="webSimilarOffer"]',
+      '[data-widget*="Similar"]',
+      '[data-widget*="similar"]',
+      '[data-widget="webRecommendationWidget"]',
+      '[data-widget*="Recommendation"]',
+      '[data-widget*="recommendation"]',
+      '[data-widget*="Analog"]',
+      '[data-widget*="analog"]'
+    ];
+
+    for (const sel of widgetSelectors) {
+      const el = document.querySelector(sel);
+      if (el && !isOwnOrTooWide(el)) {
+        // Must have product links inside
+        const pLinks = el.querySelectorAll('a[href*="/product/"]');
+        const realLinks = ownPanel ? [...pLinks].filter(l => !ownPanel.contains(l)) : [...pLinks];
+        if (realLinks.length > 0) return el;
+      }
+    }
+
+    // Method 2: Search by heading text for "Похожие предложения" etc.
+    const keywords = [
+      'похожие предложения', 'похожие товары', 'аналогичные товары',
+      'похожие', 'рекомендуем также', 'вам может понравиться',
+      'аналоги', 'с этим товаром покупают'
+    ];
+
+    const allHeadings = document.querySelectorAll('h1, h2, h3, h4, span, div');
+    for (const heading of allHeadings) {
+      if (ownPanel && ownPanel.contains(heading)) continue;
+      if (heading.children.length > 5) continue;
+      const text = heading.textContent.toLowerCase().trim();
+      if (text.length > 80) continue;
+
+      for (const kw of keywords) {
+        if (text.includes(kw)) {
+          // Walk up to find container with product links
+          let container = heading.parentElement;
+          for (let i = 0; i < 6; i++) {
+            if (!container || isOwnOrTooWide(container)) break;
+            const pLinks = container.querySelectorAll('a[href*="/product/"]');
+            const realLinks = ownPanel ? [...pLinks].filter(l => !ownPanel.contains(l)) : [...pLinks];
+            if (realLinks.length >= 2) {
+              return container;
+            }
+            container = container.parentElement;
+          }
+          break;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function fallbackProductLinkSearch(mySku, productName, productUrl, productImage, seenSkus) {
+    const results = [];
+    const ownPanel = document.getElementById('obg-dup-panel');
+    const excludeSelectors = ['header', 'footer', 'nav', '[data-widget="breadCrumbs"]',
+                              '[data-widget="webProductHeading"]', '[data-widget="webReviewProductScore"]'];
+    const excludeEls = new Set();
+    for (const sel of excludeSelectors) {
+      document.querySelectorAll(sel).forEach(el => excludeEls.add(el));
+    }
+    if (ownPanel) excludeEls.add(ownPanel);
+
+    const productLinks = document.querySelectorAll('a[href*="/product/"]');
+    for (const link of productLinks) {
+      let isExcluded = false;
+      for (const ex of excludeEls) {
+        if (ex.contains(link)) { isExcluded = true; break; }
+      }
+      if (isExcluded) continue;
+
+      const href = link.getAttribute('href') || '';
+      const sku = extractProductSkuFromUrl(href);
+      if (!sku || seenSkus.has(sku)) continue;
+      seenSkus.add(sku);
+
+      const card = findProductCard(link);
+      if (!card) continue;
+
+      const itemName = extractProductName(card, link);
+      const price = extractPrice(card);
+      const seller = extractSellerFromCard(card);
+      const image = extractImageFromCard(card);
+      const fullUrl = href.startsWith('http') ? href : 'https://www.ozon.ru' + href.split('?')[0];
+
+      results.push({
+        sku: sku,
+        name: itemName || productName,
+        price: price,
+        seller: seller,
+        sellerUrl: '',
+        url: fullUrl,
+        image: image || productImage,
+        rating: '',
+        reviews: ''
+      });
+    }
+
+    return results;
+  }
+
+  function extractProductSkuFromUrl(url) {
+    if (!url) return null;
+    // /product/some-name-123456789/ → "123456789"
+    const match = url.match(/\/product\/[^/]*?-(\d{5,15})\/?/);
+    if (match) return match[1];
+    // /product/123456789/ (just ID)
+    const match2 = url.match(/\/product\/(\d{5,15})\/?/);
+    return match2 ? match2[1] : null;
+  }
+
+  function findProductCard(link) {
+    let el = link;
+    for (let i = 0; i < 6; i++) {
+      el = el.parentElement;
+      if (!el || isOwnOrTooWide(el)) return null;
+      // Card usually has an image + price + product link
+      const hasImg = el.querySelector('img');
+      const hasPrice = el.textContent.match(/\d[\d\s]*₽/);
+      if (hasImg && hasPrice) return el;
+    }
+    // Fallback: just the parent container
+    return link.parentElement?.parentElement || link.parentElement;
+  }
+
+  function extractProductName(card, link) {
+    // Try link text first (often the product name)
+    const linkText = link.textContent.trim();
+    if (linkText.length > 5 && linkText.length < 300) return linkText;
+    // Try finding a title-like element inside the card
+    const title = card.querySelector('[class*="title"]') || card.querySelector('[class*="name"]');
+    if (title) {
+      const t = title.textContent.trim();
+      if (t.length > 5 && t.length < 300) return t;
+    }
+    return '';
+  }
+
+  function extractSellerFromCard(card) {
+    // Look for seller link or text inside a product card
+    const sellerLink = card.querySelector('a[href*="/seller/"]');
+    if (sellerLink) return sellerLink.textContent.trim();
+    // Look for text hints
+    const spans = card.querySelectorAll('span, div');
+    for (const span of spans) {
+      if (span.children.length > 2) continue;
+      const text = span.textContent.trim();
+      if (text.length > 2 && text.length < 60) {
+        if (text.includes('Продавец') || text.includes('продавец')) {
+          return text.replace(/продавец[:\s]*/i, '').trim();
+        }
+      }
+    }
+    return '';
+  }
+
+  function extractImageFromCard(card) {
+    const img = card.querySelector('img');
+    return img ? (img.src || '') : '';
+  }
+
+  // ══════════════════════════════════════════════════════════════
   // ══ FORMAT RESULT                                            ══
   // ══════════════════════════════════════════════════════════════
 
@@ -753,5 +1005,5 @@
   // ── Utilities ──
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  log('📋 Content script v5.0 — поиск других продавцов загружен');
+  log('📋 Content script v5.1 — гибридный поиск (продавцы + похожие товары) загружен');
 })();

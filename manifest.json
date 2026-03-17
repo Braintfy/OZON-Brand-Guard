@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OZON Brand Guard",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "Защита брендов на OZON — поиск других продавцов на ваших карточках товаров",
   "default_locale": "ru",
 
