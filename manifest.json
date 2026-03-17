@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OZON Brand Guard",
-  "version": "4.1.0",
-  "description": "Поиск дубликатов и защита брендов на OZON — обнаружение подделок в разделе Другие продавцы",
+  "version": "5.0.0",
+  "description": "Защита брендов на OZON — поиск других продавцов на ваших карточках товаров",
   "default_locale": "ru",
 
   "permissions": [
