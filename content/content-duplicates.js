@@ -243,6 +243,16 @@
 
   // ── Find "Другие продавцы" / "Есть дешевле" section ──
   function findOtherSellersSection() {
+    const ownPanel = document.getElementById('obg-dup-panel');
+
+    // Helper: check if element is inside our own panel or is body/html (too broad)
+    function isOwnOrTooWide(el) {
+      if (!el) return true;
+      if (el === document.body || el === document.documentElement) return true;
+      if (ownPanel && (ownPanel === el || ownPanel.contains(el) || el.contains(ownPanel))) return true;
+      return false;
+    }
+
     // Method 1: data-widget selectors (most reliable)
     const widgetSelectors = [
       '[data-widget="webOtherSellers"]',
@@ -256,7 +266,7 @@
 
     for (const sel of widgetSelectors) {
       const el = document.querySelector(sel);
-      if (el && hasSellerLinks(el)) {
+      if (el && !isOwnOrTooWide(el) && hasSellerLinks(el)) {
         log(`[DIAG] Найден виджет: ${el.getAttribute('data-widget')}`);
         return el;
       }
@@ -270,20 +280,23 @@
 
     const allHeadings = document.querySelectorAll('h1, h2, h3, h4, span, div');
     for (const heading of allHeadings) {
-      if (heading.children.length > 3) continue; // Skip containers with many children
+      // Skip our own panel elements
+      if (ownPanel && ownPanel.contains(heading)) continue;
+      if (heading.children.length > 3) continue;
       const text = heading.textContent.toLowerCase().trim();
       if (text.length > 100) continue;
 
       for (const kw of keywords) {
         if (text.includes(kw)) {
-          // Walk up to find the section container with seller links
+          // Walk up to find the section container with seller links (but not body!)
           let container = heading.parentElement;
           for (let i = 0; i < 6; i++) {
-            if (container && hasSellerLinks(container)) {
+            if (!container || isOwnOrTooWide(container)) break;
+            if (hasSellerLinks(container)) {
               log(`[DIAG] Найдена секция по тексту: "${text.substring(0, 50)}"`);
               return container;
             }
-            container = container?.parentElement;
+            container = container.parentElement;
           }
           break;
         }
@@ -294,14 +307,16 @@
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let node;
     while ((node = walker.nextNode())) {
+      if (ownPanel && ownPanel.contains(node)) continue;
       const text = node.textContent.toLowerCase().trim();
       if (text.length > 60) continue;
       for (const kw of keywords) {
         if (text.includes(kw)) {
           let container = node.parentElement;
           for (let i = 0; i < 6; i++) {
-            if (container && hasSellerLinks(container)) return container;
-            container = container?.parentElement;
+            if (!container || isOwnOrTooWide(container)) break;
+            if (hasSellerLinks(container)) return container;
+            container = container.parentElement;
           }
         }
       }
@@ -310,10 +325,18 @@
     return null;
   }
 
-  // ── Check if element contains seller links ──
+  // ── Check if element contains seller links (excluding our panel) ──
   function hasSellerLinks(el) {
     if (!el) return false;
-    return el.querySelectorAll('a[href*="/seller/"]').length > 0;
+    const links = el.querySelectorAll('a[href*="/seller/"]');
+    if (links.length === 0) return false;
+    // Make sure at least one link is NOT inside our panel
+    const ownPanel = document.getElementById('obg-dup-panel');
+    if (!ownPanel) return true;
+    for (const link of links) {
+      if (!ownPanel.contains(link)) return true;
+    }
+    return false;
   }
 
   // ── Find "Все предложения" / expand button ──
@@ -603,7 +626,7 @@
     panelEl.id = 'obg-dup-panel';
     panelEl.innerHTML = `
       <div class="obg-dup-header" id="obg-dup-drag">
-        <span>🔍 Brand Guard — Другие продавцы</span>
+        <span>🔍 Brand Guard — Сканирование</span>
         <div class="obg-dup-header-btns">
           <button id="obg-dup-pause" title="Пауза">⏸</button>
           <button id="obg-dup-stop" title="Остановить">⏹</button>

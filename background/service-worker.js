@@ -411,24 +411,24 @@ async function processDuplicateSku(index) {
     // Find or create tab on ozon.ru
     let tabId = duplicateScanState.tabId;
     if (tabId) {
-      // Reuse existing tab (stays in background — no active: true)
+      // Reuse existing tab — must be active for OZON SPA to render
       try {
         await chrome.tabs.get(tabId); // Check tab still exists
-        await chrome.tabs.update(tabId, { url });
+        await chrome.tabs.update(tabId, { url, active: true });
       } catch (e) {
-        // Tab was closed, create new one in background
-        const tab = await chrome.tabs.create({ url, active: false });
+        // Tab was closed, create new one
+        const tab = await chrome.tabs.create({ url });
         tabId = tab.id;
         duplicateScanState.tabId = tabId;
       }
     } else {
-      // Find existing ozon.ru tab or create new in background
+      // Find existing ozon.ru tab or create new
       const ozonTabs = await chrome.tabs.query({ url: 'https://www.ozon.ru/*' });
       if (ozonTabs.length > 0) {
         tabId = ozonTabs[0].id;
-        await chrome.tabs.update(tabId, { url });
+        await chrome.tabs.update(tabId, { url, active: true });
       } else {
-        const tab = await chrome.tabs.create({ url, active: false });
+        const tab = await chrome.tabs.create({ url });
         tabId = tab.id;
       }
       duplicateScanState.tabId = tabId;
