@@ -588,7 +588,7 @@
   // ══════════════════════════════════════════════════════════════
 
   function findAndParseSimilarProducts(mySku, productName, productUrl, productImage) {
-    const allResults = [];
+    const results = [];
     const seenSkus = new Set();
     const ownPanel = document.getElementById('obg-dup-panel');
 
@@ -596,25 +596,15 @@
     const currentProductSku = extractProductSkuFromUrl(productUrl);
     if (currentProductSku) seenSkus.add(currentProductSku);
 
-    if (!productName) {
-      log('[DIAG] ⚠ Название товара пустое — фильтрация по сходству невозможна, пропуск стратегии 4');
-      return [];
-    }
-
-    const origTokens = tokenizeName(productName);
-    log(`[DIAG] Токены оригинала: [${origTokens.slice(0, 8).join(', ')}] (${origTokens.length} слов)`);
-
-    if (origTokens.length === 0) {
-      log('[DIAG] ⚠ Не удалось извлечь ключевые слова из названия товара');
-      return [];
-    }
-
     // Find the "Похожие предложения" / similar section
     const section = findSimilarSection();
     let productLinks;
+    let isCuratedSection = false;
 
     if (section) {
-      log(`[DIAG] Найдена секция: "${(section.getAttribute('data-widget') || '').trim() || 'по заголовку'}"`);
+      isCuratedSection = true;
+      const widgetName = (section.getAttribute('data-widget') || '').trim();
+      log(`[DIAG] Найдена секция: "${widgetName || 'по заголовку'}"`);
       productLinks = section.querySelectorAll('a[href*="/product/"]');
     } else {
       log('[DIAG] Секция не найдена, fallback — все product-ссылки на странице');
@@ -640,12 +630,7 @@
       const image = extractImageFromCard(card);
       const fullUrl = href.startsWith('http') ? href : 'https://www.ozon.ru' + href.split('?')[0];
 
-      // ── NAME SIMILARITY FILTER ──
-      const itemTokens = tokenizeName(itemName);
-      const sim = nameSimilarity(origTokens, itemTokens);
-      if (sim < 0.25) continue; // Порог: хотя бы 25% ключевых слов совпадают
-
-      allResults.push({
+      results.push({
         sku: sku,
         name: itemName || productName,
         price: price,
@@ -654,71 +639,27 @@
         url: fullUrl,
         image: image || productImage,
         rating: '',
-        reviews: '',
-        _similarity: sim // for diagnostics
+        reviews: ''
       });
     }
 
-    // Sort by similarity descending
-    allResults.sort((a, b) => b._similarity - a._similarity);
-
-    // Log top matches
-    for (const r of allResults.slice(0, 5)) {
-      log(`[DIAG] 📎 ${(r._similarity * 100).toFixed(0)}% "${(r.name || '').substring(0, 50)}" — ${r.price}₽`);
+    // Для курированной секции OZON ("Похожие предложения") — доверяем выдаче,
+    // НЕ фильтруем по названию. Подделки часто имеют совершенно другие названия,
+    // но копируют состав/описание — что невозможно проверить без перехода на страницу.
+    // OZON сам подобрал эти товары как "похожие" — берём все.
+    if (isCuratedSection) {
+      log(`[DIAG] Секция OZON — берём все ${results.length} товаров (доверяем курации)`);
     }
 
-    // Clean up internal field
-    for (const r of allResults) delete r._similarity;
-
-    return allResults;
-  }
-
-  // ── Name similarity: tokenize + overlap coefficient ──
-
-  /** Split name into meaningful lowercase tokens, supports RU + EN + transliteration */
-  function tokenizeName(name) {
-    if (!name) return [];
-    const text = name.toLowerCase()
-      .replace(/[«»""„‹›\(\)\[\]{}]/g, ' ')
-      .replace(/[^\wа-яёa-z0-9\s-]/gi, ' ');
-    const raw = text.split(/[\s\-_/,;:\.]+/).filter(Boolean);
-
-    // Stop words: common short words that don't help identify the product
-    const stop = new Set([
-      'в', 'на', 'и', 'с', 'по', 'к', 'из', 'от', 'за', 'для', 'до', 'не', 'что',
-      'мг', 'мл', 'гр', 'шт', 'уп', 'бад', 'при', 'или', 'так', 'это', 'как',
-      'the', 'for', 'and', 'with', 'from', 'mg', 'ml', 'caps', 'tab', 'pcs'
-    ]);
-
-    return raw.filter(w => w.length > 1 && !stop.has(w));
-  }
-
-  /**
-   * Overlap coefficient: |intersection| / min(|A|, |B|)
-   * Good for detecting counterfeits: even if one name is much longer,
-   * a short original name matching 80% of its tokens → high score
-   */
-  function nameSimilarity(tokensA, tokensB) {
-    if (tokensA.length === 0 || tokensB.length === 0) return 0;
-
-    const setA = new Set(tokensA);
-    const setB = new Set(tokensB);
-
-    // Exact token matches
-    let matches = 0;
-    for (const w of setA) {
-      if (setB.has(w)) { matches++; continue; }
-      // Partial match: one token contains the other (e.g. "цитиколин" vs "citicoline")
-      for (const wb of setB) {
-        if ((w.length >= 4 && wb.includes(w)) || (wb.length >= 4 && w.includes(wb))) {
-          matches += 0.7;
-          break;
-        }
-      }
+    // Логируем первые 5
+    for (const r of results.slice(0, 5)) {
+      log(`[DIAG] 📎 "${(r.name || '').substring(0, 55)}" — ${r.price || '?'}₽`);
+    }
+    if (results.length > 5) {
+      log(`[DIAG] ... и ещё ${results.length - 5}`);
     }
 
-    // Overlap coefficient
-    return matches / Math.min(setA.size, setB.size);
+    return results;
   }
 
   /** Get all product links outside excluded areas (for fallback) */
