@@ -229,8 +229,39 @@
   // ══════════════════════════════════════════════════════════════
 
   function getProductName() {
+    // 1. Standard h1
     const h1 = document.querySelector('[data-widget="webProductHeading"] h1') || document.querySelector('h1');
-    return h1 ? h1.textContent.trim().substring(0, 200) : '';
+    if (h1 && h1.textContent.trim()) return h1.textContent.trim().substring(0, 200);
+
+    // 2. og:title meta (works on sold-out pages)
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    if (ogTitle) {
+      const content = (ogTitle.getAttribute('content') || '').trim();
+      if (content) return content.substring(0, 200);
+    }
+
+    // 3. document.title (strip " — купить ...", " | OZON" suffix)
+    const title = document.title || '';
+    if (title) {
+      const cleaned = title
+        .replace(/\s*[—\-|].*?(OZON|ozon|озон).*$/i, '')
+        .replace(/\s*купить.*$/i, '')
+        .trim();
+      if (cleaned.length > 3) return cleaned.substring(0, 200);
+    }
+
+    // 4. Breadcrumbs — last item is usually the product name
+    const crumbs = document.querySelector('[data-widget="breadCrumbs"]');
+    if (crumbs) {
+      const items = crumbs.querySelectorAll('a, span');
+      const last = items[items.length - 1];
+      if (last) {
+        const text = last.textContent.trim();
+        if (text.length > 3 && text.length < 200) return text;
+      }
+    }
+
+    return '';
   }
 
   function getProductImage() {
@@ -557,7 +588,7 @@
   // ══════════════════════════════════════════════════════════════
 
   function findAndParseSimilarProducts(mySku, productName, productUrl, productImage) {
-    const results = [];
+    const allResults = [];
     const seenSkus = new Set();
     const ownPanel = document.getElementById('obg-dup-panel');
 
@@ -565,19 +596,32 @@
     const currentProductSku = extractProductSkuFromUrl(productUrl);
     if (currentProductSku) seenSkus.add(currentProductSku);
 
-    // Find the "Похожие предложения" / similar section
-    const section = findSimilarSection();
-    if (!section) {
-      log('[DIAG] Секция "Похожие предложения" не найдена, fallback — все product-ссылки');
-      // Fallback: all product links outside header/footer/nav/panel
-      return fallbackProductLinkSearch(mySku, productName, productUrl, productImage, seenSkus);
+    if (!productName) {
+      log('[DIAG] ⚠ Название товара пустое — фильтрация по сходству невозможна, пропуск стратегии 4');
+      return [];
     }
 
-    log(`[DIAG] Найдена секция: "${(section.getAttribute('data-widget') || section.textContent.substring(0, 40)).trim()}"`);
+    const origTokens = tokenizeName(productName);
+    log(`[DIAG] Токены оригинала: [${origTokens.slice(0, 8).join(', ')}] (${origTokens.length} слов)`);
 
-    // Parse product cards from the section
-    const productLinks = section.querySelectorAll('a[href*="/product/"]');
-    log(`[DIAG] Product-ссылок в секции: ${productLinks.length}`);
+    if (origTokens.length === 0) {
+      log('[DIAG] ⚠ Не удалось извлечь ключевые слова из названия товара');
+      return [];
+    }
+
+    // Find the "Похожие предложения" / similar section
+    const section = findSimilarSection();
+    let productLinks;
+
+    if (section) {
+      log(`[DIAG] Найдена секция: "${(section.getAttribute('data-widget') || '').trim() || 'по заголовку'}"`);
+      productLinks = section.querySelectorAll('a[href*="/product/"]');
+    } else {
+      log('[DIAG] Секция не найдена, fallback — все product-ссылки на странице');
+      productLinks = getAllProductLinksOutsideExcluded();
+    }
+
+    log(`[DIAG] Product-ссылок: ${productLinks.length}`);
 
     for (const link of productLinks) {
       if (ownPanel && ownPanel.contains(link)) continue;
@@ -587,7 +631,6 @@
       if (!sku || seenSkus.has(sku)) continue;
       seenSkus.add(sku);
 
-      // Walk up to the product card container
       const card = findProductCard(link);
       if (!card) continue;
 
@@ -597,7 +640,12 @@
       const image = extractImageFromCard(card);
       const fullUrl = href.startsWith('http') ? href : 'https://www.ozon.ru' + href.split('?')[0];
 
-      results.push({
+      // ── NAME SIMILARITY FILTER ──
+      const itemTokens = tokenizeName(itemName);
+      const sim = nameSimilarity(origTokens, itemTokens);
+      if (sim < 0.25) continue; // Порог: хотя бы 25% ключевых слов совпадают
+
+      allResults.push({
         sku: sku,
         name: itemName || productName,
         price: price,
@@ -606,11 +654,91 @@
         url: fullUrl,
         image: image || productImage,
         rating: '',
-        reviews: ''
+        reviews: '',
+        _similarity: sim // for diagnostics
       });
     }
 
-    return results;
+    // Sort by similarity descending
+    allResults.sort((a, b) => b._similarity - a._similarity);
+
+    // Log top matches
+    for (const r of allResults.slice(0, 5)) {
+      log(`[DIAG] 📎 ${(r._similarity * 100).toFixed(0)}% "${(r.name || '').substring(0, 50)}" — ${r.price}₽`);
+    }
+
+    // Clean up internal field
+    for (const r of allResults) delete r._similarity;
+
+    return allResults;
+  }
+
+  // ── Name similarity: tokenize + overlap coefficient ──
+
+  /** Split name into meaningful lowercase tokens, supports RU + EN + transliteration */
+  function tokenizeName(name) {
+    if (!name) return [];
+    const text = name.toLowerCase()
+      .replace(/[«»""„‹›\(\)\[\]{}]/g, ' ')
+      .replace(/[^\wа-яёa-z0-9\s-]/gi, ' ');
+    const raw = text.split(/[\s\-_/,;:\.]+/).filter(Boolean);
+
+    // Stop words: common short words that don't help identify the product
+    const stop = new Set([
+      'в', 'на', 'и', 'с', 'по', 'к', 'из', 'от', 'за', 'для', 'до', 'не', 'что',
+      'мг', 'мл', 'гр', 'шт', 'уп', 'бад', 'при', 'или', 'так', 'это', 'как',
+      'the', 'for', 'and', 'with', 'from', 'mg', 'ml', 'caps', 'tab', 'pcs'
+    ]);
+
+    return raw.filter(w => w.length > 1 && !stop.has(w));
+  }
+
+  /**
+   * Overlap coefficient: |intersection| / min(|A|, |B|)
+   * Good for detecting counterfeits: even if one name is much longer,
+   * a short original name matching 80% of its tokens → high score
+   */
+  function nameSimilarity(tokensA, tokensB) {
+    if (tokensA.length === 0 || tokensB.length === 0) return 0;
+
+    const setA = new Set(tokensA);
+    const setB = new Set(tokensB);
+
+    // Exact token matches
+    let matches = 0;
+    for (const w of setA) {
+      if (setB.has(w)) { matches++; continue; }
+      // Partial match: one token contains the other (e.g. "цитиколин" vs "citicoline")
+      for (const wb of setB) {
+        if ((w.length >= 4 && wb.includes(w)) || (wb.length >= 4 && w.includes(wb))) {
+          matches += 0.7;
+          break;
+        }
+      }
+    }
+
+    // Overlap coefficient
+    return matches / Math.min(setA.size, setB.size);
+  }
+
+  /** Get all product links outside excluded areas (for fallback) */
+  function getAllProductLinksOutsideExcluded() {
+    const excludeSelectors = ['header', 'footer', 'nav', '[data-widget="breadCrumbs"]',
+                              '[data-widget="webProductHeading"]'];
+    const excludeEls = new Set();
+    for (const sel of excludeSelectors) {
+      document.querySelectorAll(sel).forEach(el => excludeEls.add(el));
+    }
+    const ownPanel = document.getElementById('obg-dup-panel');
+    if (ownPanel) excludeEls.add(ownPanel);
+
+    const all = document.querySelectorAll('a[href*="/product/"]');
+    return [...all].filter(link => {
+      for (const ex of excludeEls) {
+        if (ex.contains(link)) return false;
+      }
+      return true;
+    });
   }
 
   function findSimilarSection() {
@@ -671,55 +799,6 @@
     }
 
     return null;
-  }
-
-  function fallbackProductLinkSearch(mySku, productName, productUrl, productImage, seenSkus) {
-    const results = [];
-    const ownPanel = document.getElementById('obg-dup-panel');
-    const excludeSelectors = ['header', 'footer', 'nav', '[data-widget="breadCrumbs"]',
-                              '[data-widget="webProductHeading"]', '[data-widget="webReviewProductScore"]'];
-    const excludeEls = new Set();
-    for (const sel of excludeSelectors) {
-      document.querySelectorAll(sel).forEach(el => excludeEls.add(el));
-    }
-    if (ownPanel) excludeEls.add(ownPanel);
-
-    const productLinks = document.querySelectorAll('a[href*="/product/"]');
-    for (const link of productLinks) {
-      let isExcluded = false;
-      for (const ex of excludeEls) {
-        if (ex.contains(link)) { isExcluded = true; break; }
-      }
-      if (isExcluded) continue;
-
-      const href = link.getAttribute('href') || '';
-      const sku = extractProductSkuFromUrl(href);
-      if (!sku || seenSkus.has(sku)) continue;
-      seenSkus.add(sku);
-
-      const card = findProductCard(link);
-      if (!card) continue;
-
-      const itemName = extractProductName(card, link);
-      const price = extractPrice(card);
-      const seller = extractSellerFromCard(card);
-      const image = extractImageFromCard(card);
-      const fullUrl = href.startsWith('http') ? href : 'https://www.ozon.ru' + href.split('?')[0];
-
-      results.push({
-        sku: sku,
-        name: itemName || productName,
-        price: price,
-        seller: seller,
-        sellerUrl: '',
-        url: fullUrl,
-        image: image || productImage,
-        rating: '',
-        reviews: ''
-      });
-    }
-
-    return results;
   }
 
   function extractProductSkuFromUrl(url) {
