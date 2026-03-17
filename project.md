@@ -1,7 +1,7 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-16 | Версия: 4.0.1
+> Последнее обновление: 2026-03-16 | Версия: 4.1.0
 
 ## Архитектура
 
@@ -19,7 +19,7 @@ Chrome Extension (Manifest V3)
 ## Файлы и их роли
 
 ### manifest.json
-- **Manifest V3**, version `4.0.1`
+- **Manifest V3**, version `4.1.0`
 - Permissions: `storage`, `alarms`, `notifications`, `activeTab`, `scripting`, `tabs`
 - Host: `https://seller.ozon.ru/*`, `https://www.ozon.ru/*`
 - Content scripts инжектятся программно через `chrome.scripting.executeScript`
@@ -63,40 +63,40 @@ Chrome Extension (Manifest V3)
 | `updateProductSchedule(config)` | Настройка Chrome alarms для товаров |
 | `addLogEntry(entry)` | Сохранить в storage (макс. 5000 записей) |
 
-### content/content-duplicates.js (~500 строк) — МОДУЛЬ ДРУГИХ ПРОДАВЦОВ (v4.0.0 rewrite)
+### content/content-duplicates.js (~470 строк) — ПОИСК ДУБЛИКАТОВ (v4.1.0 — restored from 95ad4be)
 Работает на `www.ozon.ru/product/*`. IIFE с guard `#__obg-duplicates-guard`.
-Ищет ПРОДАВЦОВ на карточке товара (не ссылки на другие товары).
+Ищет конкурирующие ТОВАРЫ по `a[href*="/product/"]` ссылкам (НЕ seller-ссылкам).
 
 #### Основные функции
 
 | Функция | Описание |
 |---------|----------|
-| `startScan(skus, startIndex)` | Точка входа: ожидание загрузки → сбор продавцов → отправка результатов |
+| `startScan(skus, startIndex)` | Точка входа: ожидание загрузки → сбор конкурентов → отправка результатов |
 | `waitForPageLoad()` | Ожидание рендера SPA (20 попыток, ищет `data-widget` элементы) |
-| `collectOtherSellers(mySku, allOwnSkus)` | 4 стратегии сбора продавцов + фильтрация |
-| `findOtherSellersSection()` | Поиск секции: data-widget, заголовки «Другие продавцы», TreeWalker |
-| `parseSellerOffers(section, seenSellers)` | Парсинг `a[href*="/seller/"]` → seller, price, sellerUrl, sellerId |
-| `findExpandOffersButton()` | Поиск кнопки «Все предложения» / «Ещё N продавцов» |
-| `findAllSellerLinks(seenSellers)` | Широкий поиск seller-ссылок (кроме header/footer/nav) |
-| `findCheaperOffersWidget(seenSellers)` | Виджет «Есть дешевле» — отдельный блок |
-| `findOfferContainer(link)` | Walk up от seller-ссылки до контейнера с ценой |
-| `extractPrice(container)` | Regex `(\d[\d\s]*)₽` → первая цена |
-| `extractSellerIdFromUrl(url)` | Regex: `/seller/.*?(\d+)/` → ID продавца |
-| `getMainSeller()` | Текущий (основной) продавец на карточке |
-| `getProductName()` / `getProductImage()` | Метаданные товара с карточки |
+| `collectCompetitors(mySku, allOwnSkus)` | 4 стратегии сбора конкурентов + фильтрация ownSellerName + whitelist |
+| `findCompetitorSections()` | Поиск секций: data-widget, заголовки по ключевым словам, TreeWalker |
+| `parseProductCards(container, seenSkus, mySku)` | Парсинг `a[href*="/product/"]` → sku, name, price, seller, image |
+| `parseAllProductLinks(seenSkus, mySku)` | Широкий поиск product-ссылок (кроме header/footer/nav/panel) |
+| `parseOzonWidgets(seenSkus, mySku)` | Виджеты Similar/Offer/Seller/Cheaper/Carousel/Recommend |
+| `findExpandButton()` | Кнопка «Все предложения» / «Показать все» |
+| `extractSkuFromUrl(url)` | Regex: `/product/.*?(\d{5,})/` → SKU |
+| `findCardContainer(link)` | Walk up от product-ссылки до контейнера с image + price |
+| `extractCardData(container, sku, href)` | Извлечение name, price, seller, sellerUrl, image, rating, reviews |
 | `applyWhitelist(competitors)` | Фильтрация по `duplicateWhitelist` (sku/seller/inn) |
-| `showPanel()` | Drag-панель 460px, resize, word-wrap, scrollbar (синяя тема) |
+| `showPanel()` | Drag-панель 460px, resize, word-wrap, pause/stop, scrollbar (синяя тема) |
 
-#### 4 стратегии поиска продавцов (по порядку):
-1. **Секция «Другие продавцы»** — `[data-widget*="OtherSeller/Offer/Cheaper"]` + заголовки
-2. **Кнопка «Все предложения»** — клик → парсинг раскрытой секции
-3. **Широкий поиск seller-ссылок** — все `a[href*="/seller/"]` кроме nav/header/footer
-4. **Виджет «Есть дешевле»** — отдельный data-widget блок
+#### 4 стратегии поиска конкурентов (по порядку):
+1. **Секции по ключевым словам** — data-widget + заголовки «Есть дешевле», «Другие продавцы» и др.
+2. **Кнопка «Показать все»** — клик → повторный парсинг секций
+3. **Широкий поиск product-ссылок** — все `a[href*="/product/"]` кроме nav/header/footer/panel
+4. **Виджеты OZON** — `[data-widget]` с Similar/Offer/Seller/Cheaper/Carousel/Recommend
 
 #### Фильтрация:
-- `ownSellerName` из config → автоматическое исключение собственного магазина
+- `ownSellerName` из config → исключение собственного магазина
+- Все собственные SKU (allOwnSkus) исключаются из seenSkus
 - `duplicateWhitelist` → sku/seller/inn фильтрация
 - Пустой seller не матчится (фикс v3.6.1)
+- `isOwnOrTooWide()` guard — панель не парсит саму себя
 
 #### Протокол сообщений:
 - **Принимает:** `startDuplicateScan { skus[], currentIndex, config }` + `stopDuplicates`

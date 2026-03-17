@@ -1,6 +1,6 @@
-// OZON Brand Guard — Duplicate Detection Content Script v4.0.0
+// OZON Brand Guard — Duplicate Detection Content Script v4.1.0
 // Работает на www.ozon.ru/product/* страницах
-// Парсит секцию "Другие продавцы" — находит продавцов на ВАШЕЙ карточке товара
+// Парсит секции "Есть дешевле" / "Другие продавцы" для поиска подделок
 // Автор: firayzer (https://t.me/firayzer)
 
 (function () {
@@ -68,12 +68,12 @@
 
     if (shouldStop) return;
 
-    // Collect OTHER SELLERS on this product card
-    const competitors = await collectOtherSellers(currentSku, skus);
+    // Collect competitors from the page (product-link based search)
+    const competitors = await collectCompetitors(currentSku, skus);
 
     if (shouldStop) return;
 
-    log(`✅ Найдено ${competitors.length} других продавцов для SKU ${currentSku}`);
+    log(`✅ Найдено ${competitors.length} конкурентов для SKU ${currentSku}`);
 
     // Send results back
     safeSend({
@@ -105,89 +105,76 @@
   }
 
   // ══════════════════════════════════════════════════════════════
-  // ══ CORE: Collect other sellers from product page           ══
+  // ══ CORE: Collect competitors from product page              ══
+  // ══ Uses a[href*="/product/"] links (NOT seller links)       ══
   // ══════════════════════════════════════════════════════════════
 
-  async function collectOtherSellers(mySku, allOwnSkus) {
+  async function collectCompetitors(mySku, allOwnSkus) {
     const competitors = [];
-    const seenSellers = new Set();
-    const productUrl = window.location.href;
-    const productName = getProductName();
-    const productImage = getProductImage();
+    const seenSkus = new Set();
 
     // Build own SKU set for exclusion
-    const ownSkuSet = new Set();
     if (allOwnSkus && allOwnSkus.length > 0) {
-      for (const s of allOwnSkus) ownSkuSet.add(String(s));
+      for (const s of allOwnSkus) seenSkus.add(String(s));
       log(`[DIAG] Исключаю ${allOwnSkus.length} собственных SKU`);
     } else {
-      ownSkuSet.add(String(mySku));
+      seenSkus.add(String(mySku));
     }
 
-    // Get current (main) seller name for context — this is who is currently selected on the page
-    const mainSeller = getMainSeller();
-    if (mainSeller) {
-      log(`[DIAG] Основной продавец на карточке: "${mainSeller}"`);
-    }
+    // Strategy 1: Find "Есть дешевле" / "Другие продавцы" sections
+    log('[DIAG] Стратегия 1: Поиск секций по ключевым словам...');
+    const sections = findCompetitorSections();
 
-    // ── Strategy 1: Parse "Другие продавцы" / "Есть дешевле" section ──
-    log('[DIAG] Стратегия 1: Поиск секции "Другие продавцы"...');
-    const otherSellersSection = findOtherSellersSection();
-    if (otherSellersSection) {
-      const offers = parseSellerOffers(otherSellersSection, seenSellers);
-      for (const offer of offers) {
-        competitors.push(formatSellerResult(offer, mySku, productName, productUrl, productImage));
+    if (sections.length > 0) {
+      for (const section of sections) {
+        const items = parseProductCards(section, seenSkus, mySku);
+        competitors.push(...items);
       }
-      log(`[DIAG] Стратегия 1: найдено ${offers.length} продавцов`);
+      log(`[DIAG] Стратегия 1: найдено ${competitors.length} конкурентов в ${sections.length} секциях`);
     }
 
-    // ── Strategy 2: Click "Все предложения" / "Показать все" / "Ещё N продавцов" ──
-    if (competitors.length === 0) {
-      log('[DIAG] Стратегия 2: Поиск кнопки "Все предложения"...');
-      const expandBtn = findExpandOffersButton();
+    // Strategy 2: Find "Все предложения" / "Показать все" links and try to expand
+    if (competitors.length === 0 || sections.length === 0) {
+      log('[DIAG] Стратегия 2: Поиск кнопки "Показать все"...');
+      const expandBtn = findExpandButton();
       if (expandBtn) {
-        log('→ Нажимаю "Все предложения"...');
+        log('→ Нажимаю "Показать все предложения"...');
         simulateClick(expandBtn);
-        await sleep(2500);
-        const expandedSection = findOtherSellersSection();
-        if (expandedSection) {
-          const offers = parseSellerOffers(expandedSection, seenSellers);
-          for (const offer of offers) {
-            competitors.push(formatSellerResult(offer, mySku, productName, productUrl, productImage));
-          }
+        await sleep(2000);
+        const newSections = findCompetitorSections();
+        for (const section of newSections) {
+          const items = parseProductCards(section, seenSkus, mySku);
+          competitors.push(...items);
         }
-        log(`[DIAG] Стратегия 2: найдено ${competitors.length} продавцов`);
+        log(`[DIAG] Стратегия 2: найдено ${competitors.length} конкурентов`);
       }
     }
 
-    // ── Strategy 3: Broad seller link search on the product page ──
+    // Strategy 3: Parse all product links on the page (broader search)
     if (competitors.length === 0) {
-      log('[DIAG] Стратегия 3: Широкий поиск ссылок на продавцов...');
-      const sellerLinks = findAllSellerLinks(seenSellers);
-      for (const offer of sellerLinks) {
-        competitors.push(formatSellerResult(offer, mySku, productName, productUrl, productImage));
-      }
-      log(`[DIAG] Стратегия 3: найдено ${sellerLinks.length} продавцов`);
+      log('[DIAG] Стратегия 3: Широкий поиск ссылок на товары...');
+      const allItems = parseAllProductLinks(seenSkus, mySku);
+      competitors.push(...allItems);
+      log(`[DIAG] Стратегия 3: найдено ${competitors.length} ссылок`);
     }
 
-    // ── Strategy 4: Parse "Есть дешевле" widget (sometimes separate from "Другие продавцы") ──
+    // Strategy 4: Look for "webSimilarOffer" / "webOtherSellers" widgets
     if (competitors.length === 0) {
-      log('[DIAG] Стратегия 4: Поиск виджета "Есть дешевле"...');
-      const cheaperOffers = findCheaperOffersWidget(seenSellers);
-      for (const offer of cheaperOffers) {
-        competitors.push(formatSellerResult(offer, mySku, productName, productUrl, productImage));
-      }
-      log(`[DIAG] Стратегия 4: найдено ${cheaperOffers.length} продавцов`);
+      log('[DIAG] Стратегия 4: Поиск виджетов OZON...');
+      const widgetItems = parseOzonWidgets(seenSkus, mySku);
+      competitors.push(...widgetItems);
+      log(`[DIAG] Стратегия 4: найдено ${competitors.length} товаров`);
     }
 
-    // Filter out own seller if detected
-    const ownSellerName = config.ownSellerName || '';
+    // Filter out own seller by name if configured
     let filtered = competitors;
+    const ownSellerName = config.ownSellerName || '';
     if (ownSellerName) {
       const ownLower = ownSellerName.toLowerCase().trim();
       const before = filtered.length;
       filtered = filtered.filter(c => {
         const sl = (c.seller || '').toLowerCase().trim();
+        if (!sl) return true; // Keep items without seller info
         return sl !== ownLower && !sl.includes(ownLower) && !ownLower.includes(sl);
       });
       if (filtered.length < before) {
@@ -196,139 +183,121 @@
     }
 
     // Apply whitelist filtering
-    filtered = applyWhitelist(filtered);
-
-    return filtered;
-  }
-
-  // ── Get product name from page ──
-  function getProductName() {
-    const h1 = document.querySelector('[data-widget="webProductHeading"] h1') || document.querySelector('h1');
-    return h1 ? h1.textContent.trim().substring(0, 200) : '';
-  }
-
-  // ── Get product main image ──
-  function getProductImage() {
-    const img = document.querySelector('[data-widget="webGallery"] img') ||
-                document.querySelector('[data-widget="webProductImage"] img') ||
-                document.querySelector('img[fetchpriority="high"]');
-    return img ? (img.src || '') : '';
-  }
-
-  // ── Get the currently selected (main) seller on the product page ──
-  function getMainSeller() {
-    // OZON shows seller name near the "Buy" button area
-    // Look for seller link in the purchase area
-    const sellerLinks = document.querySelectorAll('a[href*="/seller/"]');
-    for (const link of sellerLinks) {
-      // Skip if in header/footer/nav
-      if (link.closest('header') || link.closest('footer') || link.closest('nav')) continue;
-      // Check if near a price/buy widget
-      const widget = link.closest('[data-widget]');
-      if (widget) {
-        const widgetName = widget.getAttribute('data-widget') || '';
-        if (widgetName.includes('Price') || widgetName.includes('Sale') ||
-            widgetName.includes('Cart') || widgetName.includes('Buy') ||
-            widgetName.includes('Seller') || widgetName.includes('web')) {
-          return link.textContent.trim();
-        }
-      }
+    const final = applyWhitelist(filtered);
+    if (final.length < filtered.length) {
+      log(`🟢 Отфильтровано по вайтлисту: ${filtered.length - final.length} товаров`);
     }
-    return '';
+
+    return final;
   }
 
   // ══════════════════════════════════════════════════════════════
-  // ══ SECTION FINDERS                                         ══
+  // ══ SECTION FINDERS (product-link based)                     ══
   // ══════════════════════════════════════════════════════════════
 
-  // ── Find "Другие продавцы" / "Есть дешевле" section ──
-  function findOtherSellersSection() {
+  // ── Helper: check if element is our panel or too broad ──
+  function isOwnOrTooWide(el) {
+    if (!el) return true;
+    if (el === document.body || el === document.documentElement) return true;
+    const ownPanel = document.getElementById('obg-dup-panel');
+    if (ownPanel && (ownPanel === el || ownPanel.contains(el) || el.contains(ownPanel))) return true;
+    return false;
+  }
+
+  // ── Find sections containing competitor products ──
+  function findCompetitorSections() {
+    const keywords = [
+      'есть дешевле', 'другие продавцы', 'другие предложения',
+      'предложения других продавцов', 'похожие предложения',
+      'другие товары', 'аналогичные товары'
+    ];
+
+    const sections = [];
+    const visited = new Set();
     const ownPanel = document.getElementById('obg-dup-panel');
 
-    // Helper: check if element is inside our own panel or is body/html (too broad)
-    function isOwnOrTooWide(el) {
-      if (!el) return true;
-      if (el === document.body || el === document.documentElement) return true;
-      if (ownPanel && (ownPanel === el || ownPanel.contains(el) || el.contains(ownPanel))) return true;
-      return false;
-    }
-
-    // Method 1: data-widget selectors (most reliable)
+    // Method 1: data-widget attributes
     const widgetSelectors = [
-      '[data-widget="webOtherSellers"]',
       '[data-widget="webSimilarOffer"]',
-      '[data-widget*="OtherSeller"]',
-      '[data-widget*="otherSeller"]',
+      '[data-widget="webOtherSellers"]',
+      '[data-widget="webCompetitorProducts"]',
+      '[data-widget*="Similar"]',
+      '[data-widget*="Seller"]',
+      '[data-widget*="Offer"]',
       '[data-widget*="Cheaper"]',
-      '[data-widget*="cheaper"]',
-      '[data-widget*="Offer"]'
+      '[data-widget="webHorizontalProductCarousel"]'
     ];
 
     for (const sel of widgetSelectors) {
-      const el = document.querySelector(sel);
-      if (el && !isOwnOrTooWide(el) && hasSellerLinks(el)) {
-        log(`[DIAG] Найден виджет: ${el.getAttribute('data-widget')}`);
-        return el;
+      const els = document.querySelectorAll(sel);
+      for (const el of els) {
+        if (!visited.has(el) && !isOwnOrTooWide(el) && hasProductLinks(el)) {
+          sections.push(el);
+          visited.add(el);
+        }
       }
     }
 
-    // Method 2: Search by heading text
-    const keywords = [
-      'другие продавцы', 'другие предложения', 'предложения других продавцов',
-      'есть дешевле', 'ещё продавц', 'еще продавц'
-    ];
-
-    const allHeadings = document.querySelectorAll('h1, h2, h3, h4, span, div');
+    // Method 2: Search by text content in headings
+    const allHeadings = document.querySelectorAll('h2, h3, h4, [class*="heading"], [class*="title"]');
     for (const heading of allHeadings) {
-      // Skip our own panel elements
       if (ownPanel && ownPanel.contains(heading)) continue;
-      if (heading.children.length > 3) continue;
       const text = heading.textContent.toLowerCase().trim();
       if (text.length > 100) continue;
-
       for (const kw of keywords) {
         if (text.includes(kw)) {
-          // Walk up to find the section container with seller links (but not body!)
+          // Walk up to find the section container
           let container = heading.parentElement;
-          for (let i = 0; i < 6; i++) {
+          for (let i = 0; i < 5; i++) {
             if (!container || isOwnOrTooWide(container)) break;
-            if (hasSellerLinks(container)) {
-              log(`[DIAG] Найдена секция по тексту: "${text.substring(0, 50)}"`);
-              return container;
+            if (hasProductLinks(container)) {
+              if (!visited.has(container)) {
+                sections.push(container);
+                visited.add(container);
+                log(`[DIAG] Найдена секция: "${heading.textContent.trim().substring(0, 50)}"`);
+              }
+              break;
             }
-            container = container.parentElement;
+            container = container?.parentElement;
           }
           break;
         }
       }
     }
 
-    // Method 3: TreeWalker for text nodes
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      if (ownPanel && ownPanel.contains(node)) continue;
-      const text = node.textContent.toLowerCase().trim();
-      if (text.length > 60) continue;
-      for (const kw of keywords) {
-        if (text.includes(kw)) {
-          let container = node.parentElement;
-          for (let i = 0; i < 6; i++) {
-            if (!container || isOwnOrTooWide(container)) break;
-            if (hasSellerLinks(container)) return container;
-            container = container.parentElement;
+    // Method 3: Search by TreeWalker for text nodes
+    if (sections.length === 0) {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (ownPanel && ownPanel.contains(node)) continue;
+        const text = node.textContent.toLowerCase().trim();
+        for (const kw of keywords) {
+          if (text === kw || (text.length < 40 && text.includes(kw))) {
+            let container = node.parentElement;
+            for (let i = 0; i < 6; i++) {
+              if (!container || isOwnOrTooWide(container)) break;
+              if (hasProductLinks(container)) {
+                if (!visited.has(container)) {
+                  sections.push(container);
+                  visited.add(container);
+                }
+                break;
+              }
+              container = container?.parentElement;
+            }
           }
         }
       }
     }
 
-    return null;
+    return sections;
   }
 
-  // ── Check if element contains seller links (excluding our panel) ──
-  function hasSellerLinks(el) {
+  // ── Check if element contains product links ──
+  function hasProductLinks(el) {
     if (!el) return false;
-    const links = el.querySelectorAll('a[href*="/seller/"]');
+    const links = el.querySelectorAll('a[href*="/product/"]');
     if (links.length === 0) return false;
     // Make sure at least one link is NOT inside our panel
     const ownPanel = document.getElementById('obg-dup-panel');
@@ -339,20 +308,12 @@
     return false;
   }
 
-  // ── Find "Все предложения" / expand button ──
-  function findExpandOffersButton() {
-    const keywords = [
-      'все предложения', 'показать все', 'все продавцы',
-      'смотреть все', 'ещё продавц', 'еще продавц'
-    ];
-    // Also match "Ещё N продавцов" pattern
-    const countPattern = /ещ[её]\s+\d+\s+продавц/;
-
-    const allLinks = document.querySelectorAll('a, button, span[role="button"], div[role="button"]');
+  // ── Find "Show all" / expand button ──
+  function findExpandButton() {
+    const keywords = ['все предложения', 'показать все', 'все продавцы', 'смотреть все', 'ещё'];
+    const allLinks = document.querySelectorAll('a, button, span[role="button"]');
     for (const el of allLinks) {
       const text = el.textContent.toLowerCase().trim();
-      if (text.length > 60) continue;
-      if (countPattern.test(text)) return el;
       for (const kw of keywords) {
         if (text.includes(kw)) return el;
       }
@@ -361,109 +322,35 @@
   }
 
   // ══════════════════════════════════════════════════════════════
-  // ══ SELLER OFFER PARSERS                                    ══
+  // ══ PRODUCT CARD PARSERS (a[href*="/product/"] based)        ══
   // ══════════════════════════════════════════════════════════════
 
-  // ── Parse seller offers from a section ──
-  function parseSellerOffers(section, seenSellers) {
-    const offers = [];
+  // ── Parse product cards within a section ──
+  function parseProductCards(container, seenSkus, mySku) {
+    const items = [];
+    const links = container.querySelectorAll('a[href*="/product/"]');
 
-    // Find all seller links in the section
-    const sellerLinks = section.querySelectorAll('a[href*="/seller/"]');
-    log(`[DIAG] Ссылок на продавцов в секции: ${sellerLinks.length}`);
-
-    for (const link of sellerLinks) {
-      const sellerName = link.textContent.trim();
-      if (!sellerName || sellerName.length > 100) continue;
-
-      const sellerKey = sellerName.toLowerCase();
-      if (seenSellers.has(sellerKey)) continue;
-      seenSellers.add(sellerKey);
-
+    for (const link of links) {
       const href = link.getAttribute('href') || '';
-      const sellerUrl = href.startsWith('http') ? href : (href ? 'https://www.ozon.ru' + href : '');
-      const sellerId = extractSellerIdFromUrl(href);
+      const sku = extractSkuFromUrl(href);
+      if (!sku || seenSkus.has(sku)) continue;
+      seenSkus.add(sku);
 
-      // Walk up to find the offer container (card/row with price)
-      const offerContainer = findOfferContainer(link);
-
-      // Extract price from the offer container
-      let price = '';
-      if (offerContainer) {
-        price = extractPrice(offerContainer);
-      }
-
-      // Extract delivery info if available
-      let delivery = '';
-      if (offerContainer) {
-        delivery = extractDeliveryInfo(offerContainer);
-      }
-
-      offers.push({
-        seller: sellerName,
-        sellerUrl,
-        sellerId: sellerId || sellerKey,
-        price,
-        delivery
-      });
+      // Find the product card container (walk up from link)
+      const card = findCardContainer(link);
+      const data = extractCardData(card || link, sku, href);
+      items.push(data);
     }
 
-    return offers;
+    return items;
   }
 
-  // ── Find the offer container (card/row) for a seller link ──
-  function findOfferContainer(link) {
-    let el = link;
-    for (let i = 0; i < 8; i++) {
-      el = el.parentElement;
-      if (!el) break;
+  // ── Parse all product links on page (broad) ──
+  function parseAllProductLinks(seenSkus, mySku) {
+    const items = [];
 
-      // An offer container typically has: seller link + price (₽) + some button
-      const hasPrice = el.textContent.match(/\d[\d\s]*₽/);
-      const hasButton = el.querySelector('button');
-      if (hasPrice && (hasButton || el.querySelectorAll('a[href*="/seller/"]').length <= 2)) {
-        return el;
-      }
-    }
-    return link.parentElement?.parentElement || link.parentElement;
-  }
-
-  // ── Extract price from container ──
-  function extractPrice(container) {
-    // Look for price with ₽ symbol, prefer the lowest/most prominent
-    const text = container.textContent;
-    const prices = [];
-    const priceRegex = /(\d[\d\s]*)\s*₽/g;
-    let match;
-    while ((match = priceRegex.exec(text)) !== null) {
-      const num = parseInt(match[1].replace(/\s/g, ''), 10);
-      if (num > 0 && num < 10000000) prices.push(num);
-    }
-    // Return the first (usually most prominent) price
-    return prices.length > 0 ? String(prices[0]) : '';
-  }
-
-  // ── Extract delivery info ──
-  function extractDeliveryInfo(container) {
-    const text = container.textContent;
-    const deliveryMatch = text.match(/(доставит[^\n,]{0,30})|(послезавтра|завтра|сегодня)/i);
-    return deliveryMatch ? deliveryMatch[0].trim() : '';
-  }
-
-  // ── Extract seller ID from URL ──
-  function extractSellerIdFromUrl(url) {
-    if (!url) return null;
-    // /seller/store-name-12345/ or /seller/12345/
-    const match = url.match(/\/seller\/(?:.*?[-/])?(\d+)\/?/);
-    return match ? match[1] : null;
-  }
-
-  // ── Find ALL seller links on the page (broad search, Strategy 3) ──
-  function findAllSellerLinks(seenSellers) {
-    const offers = [];
-
-    // Exclude navigation, header, footer
-    const excludeSelectors = ['header', 'footer', 'nav', '[data-widget="breadCrumbs"]'];
+    // Exclude navigation, header, footer, breadcrumbs
+    const excludeSelectors = ['header', 'footer', 'nav', '[data-widget="breadCrumbs"]', '[data-widget="webListReviews"]'];
     const excludeEls = new Set();
     for (const sel of excludeSelectors) {
       document.querySelectorAll(sel).forEach(el => excludeEls.add(el));
@@ -472,8 +359,8 @@
     const ownPanel = document.getElementById('obg-dup-panel');
     if (ownPanel) excludeEls.add(ownPanel);
 
-    const sellerLinks = document.querySelectorAll('a[href*="/seller/"]');
-    for (const link of sellerLinks) {
+    const links = document.querySelectorAll('a[href*="/product/"]');
+    for (const link of links) {
       // Skip if inside excluded section
       let isExcluded = false;
       for (const ex of excludeEls) {
@@ -481,90 +368,157 @@
       }
       if (isExcluded) continue;
 
-      const sellerName = link.textContent.trim();
-      if (!sellerName || sellerName.length > 100) continue;
-
-      const sellerKey = sellerName.toLowerCase();
-      if (seenSellers.has(sellerKey)) continue;
-      seenSellers.add(sellerKey);
-
       const href = link.getAttribute('href') || '';
-      const sellerUrl = href.startsWith('http') ? href : (href ? 'https://www.ozon.ru' + href : '');
-      const sellerId = extractSellerIdFromUrl(href);
+      const sku = extractSkuFromUrl(href);
+      if (!sku || seenSkus.has(sku)) continue;
 
-      const offerContainer = findOfferContainer(link);
-      const price = offerContainer ? extractPrice(offerContainer) : '';
+      // Skip if this is the main product link (same SKU)
+      if (sku === mySku) continue;
 
-      offers.push({
-        seller: sellerName,
-        sellerUrl,
-        sellerId: sellerId || sellerKey,
-        price,
-        delivery: ''
-      });
+      seenSkus.add(sku);
+      const card = findCardContainer(link);
+      const data = extractCardData(card || link, sku, href);
+      items.push(data);
     }
 
-    return offers;
+    return items;
   }
 
-  // ── Find "Есть дешевле" widget (sometimes a separate block) ──
-  function findCheaperOffersWidget(seenSellers) {
-    const offers = [];
+  // ── Parse OZON widgets ──
+  function parseOzonWidgets(seenSkus, mySku) {
+    const items = [];
     const widgets = document.querySelectorAll('[data-widget]');
-
     for (const widget of widgets) {
-      const name = (widget.getAttribute('data-widget') || '').toLowerCase();
-      if (name.includes('cheaper') || name.includes('similar') || name.includes('offer')) {
-        const sellerLinks = widget.querySelectorAll('a[href*="/seller/"]');
-        for (const link of sellerLinks) {
-          const sellerName = link.textContent.trim();
-          if (!sellerName || sellerName.length > 100) continue;
-          const sellerKey = sellerName.toLowerCase();
-          if (seenSellers.has(sellerKey)) continue;
-          seenSellers.add(sellerKey);
-
+      if (isOwnOrTooWide(widget)) continue;
+      const name = widget.getAttribute('data-widget') || '';
+      // Target widgets that typically contain competitor/similar products
+      if (name.includes('Similar') || name.includes('Offer') || name.includes('Seller') ||
+          name.includes('Cheaper') || name.includes('Carousel') || name.includes('Recommend')) {
+        const links = widget.querySelectorAll('a[href*="/product/"]');
+        for (const link of links) {
           const href = link.getAttribute('href') || '';
-          const sellerUrl = href.startsWith('http') ? href : (href ? 'https://www.ozon.ru' + href : '');
-          const sellerId = extractSellerIdFromUrl(href);
-          const container = findOfferContainer(link);
-          const price = container ? extractPrice(container) : '';
+          const sku = extractSkuFromUrl(href);
+          if (!sku || seenSkus.has(sku) || sku === mySku) continue;
+          seenSkus.add(sku);
+          const card = findCardContainer(link);
+          items.push(extractCardData(card || link, sku, href));
+        }
+      }
+    }
+    return items;
+  }
 
-          offers.push({ seller: sellerName, sellerUrl, sellerId: sellerId || sellerKey, price, delivery: '' });
+  // ── Extract SKU from OZON product URL ──
+  function extractSkuFromUrl(url) {
+    if (!url) return null;
+    // Pattern: /product/name-NUMBERS/ or /product/NUMBERS/
+    const match = url.match(/\/product\/(?:.*?[-/])?(\d{5,})(?:\/|$|\?|#)/);
+    return match ? match[1] : null;
+  }
+
+  // ── Find the product card container ──
+  function findCardContainer(link) {
+    let el = link;
+    for (let i = 0; i < 8; i++) {
+      el = el.parentElement;
+      if (!el) break;
+      // Look for card-like container (has image + text + price)
+      const hasImage = el.querySelector('img');
+      const hasPrice = el.textContent.match(/\d[\d\s]*₽/);
+      if (hasImage && hasPrice) return el;
+    }
+    return null;
+  }
+
+  // ── Extract data from a product card ──
+  function extractCardData(container, sku, href) {
+    const fullUrl = href.startsWith('http') ? href : 'https://www.ozon.ru' + href;
+
+    // Extract product name
+    let name = '';
+    const titleEl = container.querySelector('[title]') || container.querySelector('span[class]');
+    if (titleEl) {
+      name = titleEl.getAttribute('title') || titleEl.textContent.trim();
+    }
+    if (!name) {
+      const linkText = container.querySelector('a[href*="/product/"]');
+      if (linkText) name = linkText.textContent.trim();
+    }
+    name = name.replace(/\s+/g, ' ').trim().substring(0, 150);
+
+    // Extract price
+    let price = '';
+    const priceMatch = container.textContent.match(/(\d[\d\s]*)\s*₽/);
+    if (priceMatch) {
+      price = priceMatch[1].replace(/\s/g, '').trim();
+    }
+
+    // Extract seller name and seller URL
+    let seller = '';
+    let sellerUrl = '';
+    const sellerLink = container.querySelector('a[href*="/seller/"]');
+    if (sellerLink) {
+      seller = sellerLink.textContent.trim();
+      const sHref = sellerLink.getAttribute('href') || '';
+      sellerUrl = sHref.startsWith('http') ? sHref : (sHref ? 'https://www.ozon.ru' + sHref : '');
+    }
+    if (!seller) {
+      const smallTexts = container.querySelectorAll('span, div');
+      for (const st of smallTexts) {
+        const t = st.textContent.trim();
+        if (t.length > 2 && t.length < 50 && !t.includes('₽') && !t.includes('отзыв') &&
+            !t.match(/^\d/) && st.children.length === 0) {
+          if (st.parentElement && st.parentElement.querySelector('a[href*="/seller/"]')) {
+            seller = t;
+            const pLink = st.parentElement.querySelector('a[href*="/seller/"]');
+            if (pLink) {
+              const ph = pLink.getAttribute('href') || '';
+              sellerUrl = ph.startsWith('http') ? ph : (ph ? 'https://www.ozon.ru' + ph : '');
+            }
+            break;
+          }
         }
       }
     }
 
-    return offers;
-  }
+    // Extract image URL
+    let image = '';
+    const img = container.querySelector('img[src*="cdn"]') || container.querySelector('img');
+    if (img) image = img.src || img.getAttribute('srcset')?.split(' ')[0] || '';
 
-  // ══════════════════════════════════════════════════════════════
-  // ══ FORMAT + FILTER                                         ══
-  // ══════════════════════════════════════════════════════════════
+    // Extract rating
+    let rating = '';
+    const ratingMatch = container.textContent.match(/(\d[.,]\d)\s*(?:★|звезд)/i);
+    if (ratingMatch) rating = ratingMatch[1];
 
-  // ── Format a seller offer into the result object expected by popup/SW ──
-  function formatSellerResult(offer, mySku, productName, productUrl, productImage) {
+    // Extract reviews count
+    let reviews = '';
+    const reviewMatch = container.textContent.match(/(\d+)\s*отзыв/i);
+    if (reviewMatch) reviews = reviewMatch[1];
+
     return {
-      sku: offer.sellerId || offer.seller, // unique identifier for this seller
-      name: productName,                   // same product for all sellers
-      price: offer.price,
-      seller: offer.seller,
-      sellerUrl: offer.sellerUrl,
-      url: productUrl,
-      image: productImage,
-      rating: '',
-      reviews: '',
-      delivery: offer.delivery || ''
+      sku,
+      name: name || `Товар ${sku}`,
+      price,
+      seller,
+      sellerUrl,
+      url: fullUrl,
+      image,
+      rating,
+      reviews
     };
   }
 
-  // ── Apply whitelist filtering ──
+  // ══════════════════════════════════════════════════════════════
+  // ══ WHITELIST FILTER                                         ══
+  // ══════════════════════════════════════════════════════════════
+
   function applyWhitelist(competitors) {
     if (!config.duplicateWhitelist || config.duplicateWhitelist.length === 0) return competitors;
 
-    const before = competitors.length;
-    const filtered = competitors.filter(item => {
+    return competitors.filter(item => {
       for (const entry of config.duplicateWhitelist) {
-        const val = (entry.value || '').toLowerCase().trim();
+        const val = (entry.value || '').toLowerCase();
         if (!val) continue;
 
         switch (entry.type) {
@@ -572,7 +526,7 @@
             if (item.sku === val) return false;
             break;
           case 'seller': {
-            const sellerLower = (item.seller || '').toLowerCase().trim();
+            const sellerLower = (item.seller || '').toLowerCase();
             if (!sellerLower) break; // Empty seller shouldn't match anything
             if (sellerLower.includes(val) || val.includes(sellerLower)) return false;
             break;
@@ -584,16 +538,10 @@
       }
       return true;
     });
-
-    if (filtered.length < before) {
-      log(`🟢 Вайтлист: пропущено ${before - filtered.length} из ${before}, осталось ${filtered.length}`);
-    }
-
-    return filtered;
   }
 
   // ══════════════════════════════════════════════════════════════
-  // ══ CLICK SIMULATION                                        ══
+  // ══ CLICK SIMULATION                                         ══
   // ══════════════════════════════════════════════════════════════
 
   function simulateClick(el) {
@@ -616,7 +564,7 @@
   }
 
   // ══════════════════════════════════════════════════════════════
-  // ══ FLOATING PANEL (improved v4.0)                          ══
+  // ══ FLOATING PANEL (improved v4.1)                           ══
   // ══════════════════════════════════════════════════════════════
 
   function showPanel() {
@@ -681,7 +629,6 @@
       .obg-dup-log .err { color: #ff5252; }
       .obg-dup-log .warn { color: #ffab40; }
       .obg-dup-log .diag { color: #80cbc4; }
-      .obg-dup-log .seller { color: #ff8a80; font-weight: 500; }
     `;
     document.head.appendChild(style);
     document.body.appendChild(panelEl);
@@ -761,7 +708,6 @@
       else if (line.includes('❌') || line.includes('Ошибка')) div.className = 'err';
       else if (line.includes('⚠') || line.includes('⏹')) div.className = 'warn';
       else if (line.includes('[DIAG]')) div.className = 'diag';
-      else if (line.includes('продавц') || line.includes('Продавец') || line.includes('seller')) div.className = 'seller';
       div.textContent = line;
       el.appendChild(div);
     });
@@ -771,5 +717,5 @@
   // ── Utilities ──
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  log('📋 Content script v4.0 для поиска других продавцов загружен');
+  log('📋 Content script v4.1 для поиска дубликатов загружен');
 })();
