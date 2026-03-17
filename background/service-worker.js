@@ -157,9 +157,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'scanBrandsResult':
     case 'logUpdate':
-    case 'techLog':
       relayToExtensionPages(msg);
       break;
+    // NOTE: techLog NOT relayed — content scripts broadcast via chrome.runtime.sendMessage
+    // which already reaches popup directly. Relaying caused double log lines.
+    // SW-generated techLogs use relayToExtensionPages() directly.
   }
 });
 
@@ -409,24 +411,24 @@ async function processDuplicateSku(index) {
     // Find or create tab on ozon.ru
     let tabId = duplicateScanState.tabId;
     if (tabId) {
-      // Reuse existing tab
+      // Reuse existing tab (stays in background — no active: true)
       try {
         await chrome.tabs.get(tabId); // Check tab still exists
-        await chrome.tabs.update(tabId, { url, active: true });
+        await chrome.tabs.update(tabId, { url });
       } catch (e) {
-        // Tab was closed, create new one
-        const tab = await chrome.tabs.create({ url });
+        // Tab was closed, create new one in background
+        const tab = await chrome.tabs.create({ url, active: false });
         tabId = tab.id;
         duplicateScanState.tabId = tabId;
       }
     } else {
-      // Find existing ozon.ru tab or create new
+      // Find existing ozon.ru tab or create new in background
       const ozonTabs = await chrome.tabs.query({ url: 'https://www.ozon.ru/*' });
       if (ozonTabs.length > 0) {
         tabId = ozonTabs[0].id;
-        await chrome.tabs.update(tabId, { url, active: true });
+        await chrome.tabs.update(tabId, { url });
       } else {
-        const tab = await chrome.tabs.create({ url });
+        const tab = await chrome.tabs.create({ url, active: false });
         tabId = tab.id;
       }
       duplicateScanState.tabId = tabId;

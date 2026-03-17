@@ -1,7 +1,7 @@
 # OZON Brand Guard — Project Map
 
 > Обновляется после каждого изменения вместе с CHANGELOG.md
-> Последнее обновление: 2026-03-16 | Версия: 3.6.1
+> Последнее обновление: 2026-03-16 | Версия: 4.0.0
 
 ## Архитектура
 
@@ -19,7 +19,7 @@ Chrome Extension (Manifest V3)
 ## Файлы и их роли
 
 ### manifest.json
-- **Manifest V3**, version `3.6.1`
+- **Manifest V3**, version `4.0.0`
 - Permissions: `storage`, `alarms`, `notifications`, `activeTab`, `scripting`, `tabs`
 - Host: `https://seller.ozon.ru/*`, `https://www.ozon.ru/*`
 - Content scripts инжектятся программно через `chrome.scripting.executeScript`
@@ -63,34 +63,43 @@ Chrome Extension (Manifest V3)
 | `updateProductSchedule(config)` | Настройка Chrome alarms для товаров |
 | `addLogEntry(entry)` | Сохранить в storage (макс. 5000 записей) |
 
-### content/content-duplicates.js (~641 строк) — МОДУЛЬ ДУБЛИКАТОВ
+### content/content-duplicates.js (~500 строк) — МОДУЛЬ ДРУГИХ ПРОДАВЦОВ (v4.0.0 rewrite)
 Работает на `www.ozon.ru/product/*`. IIFE с guard `#__obg-duplicates-guard`.
+Ищет ПРОДАВЦОВ на карточке товара (не ссылки на другие товары).
 
 #### Основные функции
 
 | Функция | Описание |
 |---------|----------|
-| `startScan(skus, startIndex)` | Точка входа: ожидание загрузки → сбор конкурентов → отправка результатов |
+| `startScan(skus, startIndex)` | Точка входа: ожидание загрузки → сбор продавцов → отправка результатов |
 | `waitForPageLoad()` | Ожидание рендера SPA (20 попыток, ищет `data-widget` элементы) |
-| `collectCompetitors(mySku)` | 4 стратегии сбора + фильтрация по whitelist |
-| `findCompetitorSections()` | Поиск секций: data-widget, текст заголовков, TreeWalker |
-| `parseProductCards(container, seenSkus, mySku)` | Парсинг карточек → SKU, название, цена, продавец, URL, изображение, рейтинг |
-| `findExpandButton()` | Поиск и клик «Показать все» |
-| `parseAllProductLinks(seenSkus, mySku)` | Резервный поиск — все `a[href*="/product/"]` кроме nav/header/footer |
-| `parseOzonWidgets(seenSkus, mySku)` | Последний резерв — виджеты с `data-widget` Similar/Offer/Seller/Cheaper |
-| `extractSkuFromUrl(url)` | Regex: `/product/.*?(\d{5,})/` → SKU |
-| `extractCardData(container, sku, href)` | Извлечение: name, price (минимальная), seller, image, rating, reviews |
+| `collectOtherSellers(mySku, allOwnSkus)` | 4 стратегии сбора продавцов + фильтрация |
+| `findOtherSellersSection()` | Поиск секции: data-widget, заголовки «Другие продавцы», TreeWalker |
+| `parseSellerOffers(section, seenSellers)` | Парсинг `a[href*="/seller/"]` → seller, price, sellerUrl, sellerId |
+| `findExpandOffersButton()` | Поиск кнопки «Все предложения» / «Ещё N продавцов» |
+| `findAllSellerLinks(seenSellers)` | Широкий поиск seller-ссылок (кроме header/footer/nav) |
+| `findCheaperOffersWidget(seenSellers)` | Виджет «Есть дешевле» — отдельный блок |
+| `findOfferContainer(link)` | Walk up от seller-ссылки до контейнера с ценой |
+| `extractPrice(container)` | Regex `(\d[\d\s]*)₽` → первая цена |
+| `extractSellerIdFromUrl(url)` | Regex: `/seller/.*?(\d+)/` → ID продавца |
+| `getMainSeller()` | Текущий (основной) продавец на карточке |
+| `getProductName()` / `getProductImage()` | Метаданные товара с карточки |
 | `applyWhitelist(competitors)` | Фильтрация по `duplicateWhitelist` (sku/seller/inn) |
-| `showPanel()` | Drag-панель на странице OZON (синяя тема, ⏸ ⏹ − × кнопки) |
+| `showPanel()` | Drag-панель 460px, resize, word-wrap, scrollbar (синяя тема) |
 
-#### 4 стратегии сбора (по порядку):
-1. **data-widget секции** — `[data-widget*="Similar/Seller/Offer/Cheaper"]` (самый надёжный)
-2. **Текстовые секции** — поиск заголовков «есть дешевле», «другие продавцы»
-3. **Широкий поиск ссылок** — все product-ссылки кроме nav/header/footer
-4. **Виджет-парсинг** — финальный резерв через атрибуты `data-widget`
+#### 4 стратегии поиска продавцов (по порядку):
+1. **Секция «Другие продавцы»** — `[data-widget*="OtherSeller/Offer/Cheaper"]` + заголовки
+2. **Кнопка «Все предложения»** — клик → парсинг раскрытой секции
+3. **Широкий поиск seller-ссылок** — все `a[href*="/seller/"]` кроме nav/header/footer
+4. **Виджет «Есть дешевле»** — отдельный data-widget блок
+
+#### Фильтрация:
+- `ownSellerName` из config → автоматическое исключение собственного магазина
+- `duplicateWhitelist` → sku/seller/inn фильтрация
+- Пустой seller не матчится (фикс v3.6.1)
 
 #### Протокол сообщений:
-- **Принимает:** `startDuplicateScan { skus[], currentIndex, config }` + `stopDuplicates` + `pauseDuplicates` + `resumeDuplicates`
+- **Принимает:** `startDuplicateScan { skus[], currentIndex, config }` + `stopDuplicates`
 - **Отправляет:** `duplicatePageResult { sku, competitors[], error?, pageIndex, totalSkus }` + `techLog`
 
 ### content/content-batch-products.js (~549 строк) — BATCH КОЛЛЕКТОР SKU (v3.6.0 rewrite)
@@ -205,7 +214,7 @@ Chrome Extension (Manifest V3)
 - Scripts: `libs/xlsx-reader.js` + `popup.js`
 
 ### popup/popup.js (~1244 строк)
-- `DEFAULT_CONFIG`: brands[], whitelist[], duplicateWhitelist[], duplicateDelay:3, lastDuplicateResults[], savedSkuInput
+- `DEFAULT_CONFIG`: brands[], whitelist[], duplicateWhitelist[], duplicateDelay:3, lastDuplicateResults[], savedSkuInput, ownSellerName
 - `MAX_LOG_ENTRIES = 5000`
 - **4 стратегии**: `manual`, `current`, `batch`, `file` — переключение через `mode-switch[data-name="dupStrategy"]`
 - **XLSX импорт**: `xlsxParsedSkus[]` — локальная переменная, заполняется при выборе файла через `readXlsxSkus()`
@@ -233,6 +242,7 @@ Chrome Extension (Manifest V3)
     sourceSku, sku, name, price, seller, sellerUrl, url, image, rating, reviews
   }],
   savedSkuInput: '',                  // сохранённый текст из textarea SKU
+  ownSellerName: '',                  // название собственного магазина для исключения
 
   // Legacy: Защита брендов
   brands: [{ id, name, complaint, fileData (base64), fileName }],

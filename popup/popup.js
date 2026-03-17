@@ -28,7 +28,8 @@
     duplicateWhitelist: [],
     duplicateDelay: 3,
     lastDuplicateResults: [],
-    savedSkuInput: ''
+    savedSkuInput: '',
+    ownSellerName: ''
   };
 
   const MAX_LOG_ENTRIES = 5000;
@@ -188,6 +189,7 @@
     id('dupDelayRange').value = config.duplicateDelay || 3;
     id('dupDelayValue').textContent = (config.duplicateDelay || 3) + 'с';
     id('notificationsEnabled').checked = config.notificationsEnabled;
+    if (id('ownSellerName')) id('ownSellerName').value = config.ownSellerName || '';
   }
 
   function renderDupWhitelist() {
@@ -970,6 +972,9 @@
 
     document.getElementById('defaultComplaint').addEventListener('change', async (e) => { config.defaultComplaint = e.target.value.trim(); await saveConfig(); });
     document.getElementById('notificationsEnabled').addEventListener('change', async (e) => { config.notificationsEnabled = e.target.checked; await saveConfig(); });
+    if (document.getElementById('ownSellerName')) {
+      document.getElementById('ownSellerName').addEventListener('change', async (e) => { config.ownSellerName = e.target.value.trim(); await saveConfig(); });
+    }
 
     // ═══════════ SHARED: Data management ═══════════
     document.getElementById('btnExport').addEventListener('click', () => downloadFile(JSON.stringify(config, null, 2), 'brand-guard-settings.json', 'application/json'));
